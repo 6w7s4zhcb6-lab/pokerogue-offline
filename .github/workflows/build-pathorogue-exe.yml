@@ -218,6 +218,9 @@ jobs:
       - name: Launch the actual portable EXE offline and verify quiz tracker
         run: node pathorogue/verify-build.cjs --exe ${{ steps.exe_path.outputs.exe }} --report-dir verification
 
+      - name: Play real battles in the downloadable EXE offline
+        run: node pathorogue/gameplay-smoke.cjs --exe ${{ steps.exe_path.outputs.exe }} --report-dir verification/gameplay
+
       - name: Upload runtime verification evidence
         if: always()
         uses: actions/upload-artifact@v4
