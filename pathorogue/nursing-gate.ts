@@ -5,6 +5,7 @@
  * lecture slides. No AI API, credentials, or network calls.
  */
 import { nursingFacts, type NursingFact } from "./nursing-content";
+import { createQuizEffects } from "./quiz-effects";
 
 type Bank = "patho";
 type Gate = "attack" | "defense";
@@ -136,6 +137,7 @@ let activeGate = false;
 let panelOpen = false;
 let hud: HTMLElement | null = null;
 let shade: HTMLElement | null = null;
+let quizEffects: ReturnType<typeof createQuizEffects> | null = null;
 const stemHistory = new Map<string, string[]>();
 
 function persist() {
@@ -347,7 +349,8 @@ const style = `
 #ng-hud .ng-action{padding:7px 9px;border-radius:9px;border:1px solid #58738c;background:#20354d}
 #ng-hud select{padding:7px;border-radius:9px;border:1px solid #64839b;background:#14263e}
 #ng-overlay{position:fixed;inset:0;z-index:2147483600;overflow:auto;display:flex;justify-content:center;align-items:center;background:#030a19da;backdrop-filter:blur(6px);padding:16px}
-#ng-overlay .ng-dialog{width:min(660px,100%);max-height:min(96vh,900px);overflow:auto;background:linear-gradient(135deg,#1e3553,#0e1d31);border-radius:20px;border:1px solid #679abd;box-shadow:0 25px 85px #000c;padding:24px}
+#ng-overlay #ng-question-host{position:relative;z-index:3;width:min(660px,100%)}
+#ng-overlay .ng-dialog{width:100%;max-height:min(96vh,900px);overflow:auto;background:linear-gradient(135deg,#1e3553,#0e1d31);border-radius:20px;border:1px solid #679abd;box-shadow:0 25px 85px #000c;padding:24px}
 #ng-overlay .ng-kicker{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:#76ebd1;font-weight:800}
 #ng-overlay h2{font-size:clamp(19px,3vw,25px);line-height:1.3;margin:12px 0 18px}
 #ng-overlay p{line-height:1.5}
@@ -445,6 +448,7 @@ function renderHUD() {
 function blockGameplayKeys(event: KeyboardEvent) {
   // Capture before PokéRogue's input listeners while providing number-key controls.
   if (!activeGate) return;
+  if (event.target instanceof Element && event.target.closest(".ng-effects-controls")) return;
   if (event.type === "keydown" && !event.repeat) {
     if (/^[1-6]$/.test(event.key)) {
       const index = Number(event.key) - 1;
@@ -476,10 +480,14 @@ export async function openNursingGate(mode: Gate): Promise<boolean> {
   shade = document.createElement("div"); shade.id = "ng-overlay";
   shade.setAttribute("role", "dialog"); shade.setAttribute("aria-modal", "true");
   document.body.appendChild(shade);
+  const questionHost = document.createElement("div");
+  questionHost.id = "ng-question-host";
+  shade.appendChild(questionHost);
   let passed = true;
   let conceptId: string | null = null;
   const usedInGate = new Set<string>();
   try {
+    quizEffects = createQuizEffects(shade, mode, [...new Set(nursingFacts.map(f => f.conceptId))]);
     for (let n = 1; n <= required; n++) {
       const q = takeQuestion(conceptId, usedInGate);
       // The first concept anchors every question in this check, including reviews.
@@ -491,6 +499,7 @@ export async function openNursingGate(mode: Gate): Promise<boolean> {
     }
     return passed;
   } finally {
+    quizEffects?.dispose(); quizEffects = null;
     shade?.remove(); shade = null;
     document.removeEventListener("keydown", blockGameplayKeys, true);
     document.removeEventListener("keyup", blockGameplayKeys, true);
@@ -502,9 +511,12 @@ export async function openNursingGate(mode: Gate): Promise<boolean> {
 function askQuestion(q: PreparedQuestion, number: number, required: number, mode: Gate): Promise<boolean> {
   return new Promise(resolve => {
     if (!shade) { resolve(false); return; }
+    const questionHost = shade.querySelector<HTMLElement>("#ng-question-host");
+    if (!questionHost) { resolve(false); return; }
     const bank = state.banks[q.fact.bank];
     const challenge = mode === "attack" ? "EARN YOUR ATTACK'S ACCURACY ROLL" : "EARN YOUR CHANCE TO DODGE";
-    shade.innerHTML = `<div class="ng-dialog" data-mode="${mode}" data-concept="${escapeHtml(q.fact.conceptId)}" data-subsection="${escapeHtml(q.fact.subsectionId)}" data-level="${q.level + 1}" data-review="${q.isReview}"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}${q.rationaleOptions.length ? " · ANSWER AND EXPLANATION REQUIRED" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-explanations" aria-live="polite"></div><div id="ng-response" aria-live="polite"></div><p class="ng-note">${required} correct answers required. A mistake causes your attack to miss or prevents your dodge chance. Pokémon immunity and Protect effects still work normally.</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
+    questionHost.innerHTML = `<div class="ng-dialog" data-mode="${mode}" data-concept="${escapeHtml(q.fact.conceptId)}" data-subsection="${escapeHtml(q.fact.subsectionId)}" data-level="${q.level + 1}" data-review="${q.isReview}"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}${q.rationaleOptions.length ? " · ANSWER AND EXPLANATION REQUIRED" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-explanations" aria-live="polite"></div><div id="ng-response" aria-live="polite"></div><p class="ng-note">${required} correct answers required. A mistake causes your attack to miss or prevents your dodge chance. Pokémon immunity and Protect effects still work normally.</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
+    quizEffects?.showQuestion(q.fact.conceptId);
     let answered = false;
     const selectedOptions = new Set<string>();
     let selectedRationale: string | null = null;
@@ -513,6 +525,7 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
       answered = true;
       const correct = selectedOptions.size === q.answers.length && q.answers.every(answer => selectedOptions.has(answer))
         && (!q.rationaleOptions.length || selectedRationale === q.rationale);
+      quizEffects?.answer(correct, correct && number === required);
       shade?.querySelectorAll<HTMLButtonElement>("button[data-rationale]").forEach(button => {
         button.disabled = true;
         const option = q.rationaleOptions[Number(button.dataset.rationale)];
@@ -530,7 +543,13 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
       if (submit) submit.disabled = true;
       const response = shade?.querySelector<HTMLElement>("#ng-response");
       if (response) response.innerHTML = `<div class="ng-feedback ${correct ? "" : "ng-failed"}"><b>${correct ? "Correct" : "Incorrect"}</b><p><strong>Answer${q.answers.length > 1 ? "s" : ""}:</strong> ${escapeHtml(q.answers.join("; "))}</p><p><strong>Rationale:</strong> ${escapeHtml(q.rationale)}</p>${!correct && q.fact.miniLesson?.length ? `<p><strong>Mini-lesson:</strong> ${escapeHtml(q.fact.miniLesson.join(" · "))}</p>` : ""}<p class="ng-detail">${correct ? (number === required ? "The game will now perform its original accuracy check." : `${required-number} more correct ${required-number===1 ? "answer is" : "answers are"} required.`) : (mode === "attack" ? "Your attack misses this turn." : "The enemy's accuracy roll is bypassed, but type immunity and protection still apply.")}</p><button type="button" class="ng-next" id="ng-continue">Continue</button><div style="clear:both"></div></div>`;
-      shade?.querySelector("#ng-continue")?.addEventListener("click", () => resolve(correct), { once: true });
+      shade?.querySelector("#ng-continue")?.addEventListener("click", async event => {
+        (event.currentTarget as HTMLButtonElement).disabled = true;
+        // Keep each bounce, and the final completion spin, visible even if
+        // Continue is pressed immediately. Combat stays paused throughout.
+        await quizEffects?.settled();
+        resolve(correct);
+      }, { once: true });
       (shade?.querySelector("#ng-continue") as HTMLButtonElement | null)?.focus();
     };
     shade.querySelectorAll<HTMLButtonElement>("button[data-answer]").forEach(button => button.addEventListener("click", () => {

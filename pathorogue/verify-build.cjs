@@ -163,6 +163,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
       await delay(500);
     }
     assert(hud?.includes("Patho Quiz"), "Downloaded EXE never initialized Pathophysiology HUD");
+    assert.equal(await evaluate(session.cdp, "document.querySelectorAll('.ng-effects').length"), 0, "Quiz graphics appeared outside a quiz overlay");
     const url = await evaluate(session.cdp, "location.href");
     assert(url.startsWith("file://"), `Game must load packaged files offline: ${url}`);
     await evaluate(session.cdp, "document.querySelector('#ng-toggle').click()");
@@ -180,7 +181,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
       unbundledAppPath: session.appPath,
       sha256: await hashFile(exe),
       offline: { externalDNSBlocked: true, rendererHTTPBlocked: true, loadedURL: url },
-      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true },
+      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true, effectsAbsentOutsideQuiz: true },
       scope: session.appPath
         ? "Unbundled Electron diagnostic launch; this does not verify the downloadable portable EXE."
         : "Packaged portable EXE startup and tracker smoke test; battle enforcement requires separate battle verification.",

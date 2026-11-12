@@ -19,6 +19,7 @@ const anchors={
   class:'  public readonly phaseName = "MoveEffectPhase";',
   start:'  public override start(): void {',
   accuracy:'    const moveAccuracy = move.calculateBattleAccuracy(user, target);',
+  nextHit:'    globalScene.phaseManager.unshiftNew("MoveEffectPhase", this.battlerIndex, this.targets, this.move, this.useMode);',
   imp:'import type { PostMoveInteractionAbAttrParams, PostMoveUsedAbAttrParams } from "#abilities/ab-attrs";'
 };
 for(const [k,v] of Object.entries(anchors)) assert(s.split(v).length===2,"Missing or duplicated "+k+" source anchor");
@@ -51,6 +52,14 @@ s=s.replace(anchors.start,[
 '      this.pathoGateOpened = true;',
 '    }'
 ].join("\n"));
+s=s.replace(anchors.nextHit,[
+'    // PATHOROGUE_MULTI_HIT_VERDICT: one quiz result applies to every strike.',
+'    const next = globalScene.phaseManager.create("MoveEffectPhase", this.battlerIndex, this.targets, this.move, this.useMode);',
+'    next.pathoGateOpened = this.pathoGateOpened;',
+'    next.pathoGatePassed = this.pathoGatePassed;',
+'    next.pathoGateMode = this.pathoGateMode;',
+'    globalScene.phaseManager.unshiftPhase(next);'
+].join("\n"));
 s=s.replace(anchors.accuracy,[
 '    // '+marker+': original effectiveness/protection checks above are preserved.',
 '    if (user.isPlayer() !== target.isPlayer() && this.pathoGateMode === "attack" && !this.pathoGatePassed) {',
@@ -64,9 +73,14 @@ s=s.replace(anchors.accuracy,[
 s=s.replace(anchors.imp,anchors.imp+'\nimport { openNursingGate } from "../mods/nursing-gate";');
 main=main.replace(/^(import "#app\/polyfills";[^\r\n]*\r?\n)/, '$1import { initNursingUI } from "./mods/nursing-gate"; // PATHOROGUE_UI_BOOT\n');
 main=main.replace("async function startGame(): Promise<void> {", "async function startGame(): Promise<void> {\n  initNursingUI();");
-for(const name of ["nursing-gate.ts","nursing-content.ts"])assert(fs.existsSync(path.join(__dirname,name)),"Missing "+name);
+const modFiles=["nursing-gate.ts","nursing-content.ts","quiz-effects.ts","quiz-ball.png","quiz-stars.png"];
+for(const name of modFiles){
+  const source=path.join(__dirname,name);
+  assert(fs.existsSync(source)&&fs.statSync(source).isFile()&&fs.statSync(source).size>0,"Missing or empty "+name);
+  if(name.endsWith(".png"))assert(fs.readFileSync(source).subarray(0,8).toString("hex")==="89504e470d0a1a0a","Invalid PNG asset "+name);
+}
 fs.mkdirSync(md,{recursive:true});
-for(const name of ["nursing-gate.ts","nursing-content.ts"])fs.copyFileSync(path.join(__dirname,name),path.join(md,name));
+for(const name of modFiles)fs.copyFileSync(path.join(__dirname,name),path.join(md,name));
 fs.writeFileSync(file,s);
 fs.writeFileSync(mainFile,main);
 console.log("PathoRogue question gate patched into original PokéRogue.");

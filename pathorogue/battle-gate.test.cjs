@@ -33,6 +33,7 @@ const enums = new Proxy({}, { get: (_, key) => key });
 function harness(player = true, passed = true) {
   let resolveGate;
   const calls = [];
+  const queued = [];
   const stats = { starts: 0, completed: 0, accuracy: 0 };
   const user = {
     isPlayer: () => player,
@@ -68,6 +69,10 @@ function harness(player = true, passed = true) {
     globalScene: {
       currentBattle: { double: false }, getField: () => [target],
       applyModifiers() {},
+      phaseManager: {
+        create(name, ...args) { assert.equal(name, "MoveEffectPhase"); return new context.MoveEffectPhase(...args); },
+        unshiftPhase(phase) { queued.push(phase); },
+      },
     },
     MoveCategory: enums, MoveTarget: enums, MoveResult: enums, MoveFlags: enums,
     HitCheckResult: enums, BattlerTagType: enums, BattlerTagLapseType: enums,
@@ -91,7 +96,7 @@ function harness(player = true, passed = true) {
   // lifecycle. hitCheck itself is exercised separately against exact source.
   phase.conductHitChecks = () => [];
   phase.postAnimCallback = () => { stats.completed++; };
-  return { phase, user, target, move, calls, stats, settle: async () => { resolveGate(); await Promise.resolve(); } };
+  return { phase, user, target, move, calls, queued, stats, settle: async () => { resolveGate(); await Promise.resolve(); } };
 }
 
 test("the tracker is initialized from game startup, after polyfills", () => {
@@ -170,4 +175,49 @@ test("later strikes and status moves do not open additional gates", () => {
   status.phase.start();
   assert.equal(status.calls.length, 0);
   assert.equal(status.stats.completed, 1);
+});
+
+for (const player of [true, false]) {
+  for (const passed of [true, false]) {
+    test(`${player ? "attack" : "defense"} ${passed ? "passed" : "failed"} verdict carries through CHECK_ALL_HITS without repeating the quiz`, async () => {
+      const h = harness(player, passed);
+      h.phase.start(); await h.settle();
+      h.user.turnData.hitCount = 3;
+      h.user.turnData.hitsLeft = 2;
+      h.move.hasFlag = flag => flag === "CHECK_ALL_HITS";
+      h.move.calculateBattleAccuracy = () => 0;
+      h.phase.addNextHitPhase();
+      assert.equal(h.queued.length, 1);
+      const next = h.queued[0];
+      next.checkBypassAccAndInvuln = () => false;
+      next.protectedCheck = () => false;
+      next.conductHitChecks = h.phase.conductHitChecks;
+      next.postAnimCallback = h.phase.postAnimCallback;
+      next.start();
+      assert.equal(h.calls.length, 1);
+      assert.equal(next.pathoGateMode, player ? "attack" : "defense");
+      assert.equal(next.pathoGatePassed, passed);
+      assert.equal(next.hitCheck(h.target)[0], !player && !passed ? "HIT" : "MISS");
+    });
+  }
+}
+
+test("a spread move hitting an ally cannot bypass a failed attack quiz on later enemy strikes", async () => {
+  const h = harness(true, false);
+  h.phase.start(); await h.settle();
+  const ally = { ...h.target, isPlayer: () => true };
+  assert.equal(h.phase.hitCheck(h.target)[0], "MISS");
+  assert.equal(h.phase.hitCheck(ally)[0], "HIT");
+  h.user.turnData.hitCount = 3;
+  h.user.turnData.hitsLeft = 2;
+  h.phase.addNextHitPhase();
+  const next = h.queued[0];
+  next.checkBypassAccAndInvuln = () => false;
+  next.protectedCheck = () => false;
+  next.conductHitChecks = h.phase.conductHitChecks;
+  next.postAnimCallback = h.phase.postAnimCallback;
+  next.start();
+  assert.equal(next.hitCheck(h.target)[0], "MISS");
+  assert.equal(next.hitCheck(ally)[0], "HIT");
+  assert.equal(h.calls.length, 1);
 });

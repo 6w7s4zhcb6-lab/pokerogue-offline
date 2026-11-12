@@ -12,11 +12,13 @@ function loadQuiz() {
   const context = vm.createContext({
     console,
     window: { localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) } },
+    createQuizEffects: () => ({ showQuestion() {}, answer() {}, settled() {}, dispose() {} }),
   });
   const bank = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-content.ts'), 'utf8'))
     .replace('export const nursingFacts', 'const nursingFacts');
   const quiz = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-gate.ts'), 'utf8'))
     .replace(/^import .*nursing-content.*;\r?\n/m, '')
+    .replace(/^import .*quiz-effects.*;\r?\n/m, '')
     .replace(/export /g, '');
   vm.runInContext(bank + '\n' + quiz + `\nthis.quiz = {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
@@ -27,7 +29,7 @@ function loadQuiz() {
       hud = { querySelectorAll: () => [], querySelector: () => null, innerHTML: '' };
       this.document = {
         addEventListener() {}, removeEventListener() {},
-        createElement: () => ({ setAttribute() {}, remove() {} }),
+        createElement: () => ({ setAttribute() {}, appendChild() {}, remove() {} }),
         body: { appendChild() {} },
       };
       const asked = [];
