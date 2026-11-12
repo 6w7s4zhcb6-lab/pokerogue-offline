@@ -362,9 +362,11 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
         spinVisibleMs: spinEnd.at - spin.at, snapshot: spin.effects,
         animationEvents: recorded.events.filter(e => e.animationName === 'ng-quiz-spin').map(({kind,at,side}) => ({kind,at,side})) };
     }
-    const next = await readQuestion(cdp);
-    assert(!next || next.subsection !== question.subsection, 'Feedback animation never released the next game step');
-    if (!next) assert.equal(await evaluate(cdp, "document.querySelectorAll('.ng-effects').length"), 0, 'Effects survived after the quiz overlay closed');
+    // The observer already witnessed this question advance. A later CDP read
+    // may see a new gate with the same generic subsection name, so compare
+    // cleanup and the presence of a current question in one renderer snapshot.
+    const current = await evaluate(cdp, `({ question: !!document.querySelector('#ng-overlay .ng-dialog'), effects: document.querySelectorAll('.ng-effects').length })`);
+    assert(current.question || current.effects === 0, 'Effects survived outside the question overlay');
   }
   await delay(80);
   return { concept: fact.conceptId, subsection: fact.subsectionId, level: question.level, review: question.review, rationaleRequired, policy, correct, effects };
@@ -483,7 +485,9 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
         active = null;
       }
     } else {
-      assert.equal(await evaluate(cdp, "document.querySelectorAll('.ng-effects').length"), 0, 'Quiz effects remain visible during normal gameplay');
+      const visibility = await evaluate(cdp, `({ question: !!document.querySelector('#ng-overlay .ng-dialog'), effects: document.querySelectorAll('.ng-effects').length })`);
+      if (visibility.question) continue; // A new gate can open between CDP reads.
+      assert.equal(visibility.effects, 0, 'Quiz effects remain visible during normal gameplay');
       settleFailedMoves(report, state);
       if (predicate(report)) return;
       await advanceMenus(cdp, scene, state);
