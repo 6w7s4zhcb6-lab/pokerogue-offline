@@ -11,7 +11,7 @@ let s=fs.readFileSync(file,"utf8");
 assert(!s.includes(marker),"Already patched");
 const anchors={
   class:'  public readonly phaseName = "MoveEffectPhase";',
-  start:'  public override start(): void {\n    super.start();',
+  start:'  public override start(): void {',
   accuracy:'    const moveAccuracy = move.calculateBattleAccuracy(user, target);',
   imp:'import type { PostMoveInteractionAbAttrParams, PostMoveUsedAbAttrParams } from "#abilities/ab-attrs";'
 };
@@ -39,8 +39,7 @@ s=s.replace(anchors.start,[
 '        return;',
 '      }',
 '      this.pathoGateOpened = true;',
-'    }',
-'    super.start();'
+'    }'
 ].join("\n"));
 s=s.replace(anchors.accuracy,[
 '    // '+marker+': original effectiveness/protection checks above are preserved.',
