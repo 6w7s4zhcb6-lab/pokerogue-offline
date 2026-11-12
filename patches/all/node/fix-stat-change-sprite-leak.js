@@ -43,6 +43,14 @@ if (src.includes("fix-stat-change-sprite-leak")) {
   process.exit(0);
 }
 
+// Phaser 4 upstream now destroys the sprite in a finally block, including
+// interrupted animations. Keep that stronger fix rather than applying the
+// obsolete Phaser 3 mask-removal anchor below.
+if (/finally\s*\{\s*(?:\/\/[^\n]*\n\s*)?statSprite\.destroy\(\);\s*\}/.test(src)) {
+  console.log("Upstream already destroys statSprite in finally; no leak patch needed.");
+  process.exit(0);
+}
+
 const ANCHOR = `    await playTween({
       targets: statSprite,
       duration: 250,

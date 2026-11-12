@@ -40,6 +40,7 @@ type PreparedQuestion = {
   rationale: string;
   stem: string;
   options: string[];
+  rationaleOptions: string[];
   level: number;
   isReview: boolean;
 };
@@ -48,6 +49,20 @@ const STORAGE_KEY = "pokerogue.pathophysiology-gate.v3";
 const PREVIOUS_STORAGE_KEY = "pokerogue.pathophysiology-gate.v2";
 const LEGACY_STORAGE_KEY = "pokerogue.nursing-gate.v1";
 const LEVELS = ["Easy", "Medium", "Hard", "Very Hard", "Extreme", "Hard Extreme", "Super Extreme", "Ultra Extreme", "Sub Max", "Max"] as const;
+// Higher tiers use the existing clinical bank rather than invented scenarios:
+// first increase alternatives, then require the matching explanation as well.
+const DIFFICULTY = [
+  { choices: 3, close: false, rationales: 0 },
+  { choices: 4, close: false, rationales: 0 },
+  { choices: 5, close: false, rationales: 0 },
+  { choices: 6, close: false, rationales: 0 },
+  { choices: 6, close: true, rationales: 0 },
+  { choices: 4, close: true, rationales: 2 },
+  { choices: 5, close: true, rationales: 3 },
+  { choices: 6, close: true, rationales: 4 },
+  { choices: 6, close: true, rationales: 5 },
+  { choices: 6, close: true, rationales: 6 },
+] as const;
 const REVIEW_DELAYS = [10, 20, 50] as const;
 const PREFETCH = 5;
 const bankNames: Record<Bank, string> = { patho: "Pathophysiology" };
@@ -96,6 +111,7 @@ function normalizeState(source: unknown): State | null {
   return state;
 }
 function readState(): State {
+  if (typeof window === "undefined") return emptyState();
   try {
     const latest = window.localStorage.getItem(STORAGE_KEY);
     if (latest) {
@@ -142,11 +158,12 @@ function conceptMastered(conceptId: string) {
   const items = conceptFacts(conceptId);
   return items.length > 0 && items.every(f => stateOf(f) === "known");
 }
-function dueReview(bank: Bank, excluded: Set<string>): NursingFact | null {
+function dueReview(bank: Bank, excluded: Set<string>, conceptId: string | null = null): NursingFact | null {
   const total = state.banks[bank].total;
   return factsFor(bank).filter(f => {
     const i = learningItem(f);
-    return i && i.misses > 0 && !i.mastered && i.dueAt > 0 && i.dueAt <= total && !excluded.has(f.id);
+    return i && i.misses > 0 && !i.mastered && i.dueAt > 0 && i.dueAt <= total && !excluded.has(f.id)
+      && (!conceptId || f.conceptId === conceptId);
   }).sort((a, b) => {
     const x = learningItem(a)!;
     const y = learningItem(b)!;
@@ -183,6 +200,7 @@ function chooseFresh(bank: Bank, excluded: Set<string>, conceptId: string | null
 
 function makeQuestion(f: NursingFact, isReview: boolean): PreparedQuestion {
   const level = state.banks[f.bank].tier;
+  const difficulty = DIFFICULTY[level];
   const variant = level >= 5 && f.expert ? { ...f, ...f.expert } : f;
   const answer = variant.answer || f.answer;
   const contexts = [
@@ -213,6 +231,7 @@ function makeQuestion(f: NursingFact, isReview: boolean): PreparedQuestion {
       rationale: f.sata.why,
       stem: `${context} ${f.sata.cue} ${f.sata.task}`,
       options: shuffle([...f.sata.right, ...f.sata.wrong]),
+      rationaleOptions: [],
       level,
       isReview,
     };
@@ -223,13 +242,25 @@ function makeQuestion(f: NursingFact, isReview: boolean): PreparedQuestion {
     if (alternate) stem = stem.replace(context, alternate);
   }
   stemHistory.set(f.id, [...prior.slice(-10), stem]);
-  const count = level <= 4 ? [4, 5, 6, 6, 6][level] : [4, 5, 6, 6, 6][level - 5];
+  const count = difficulty.choices;
   const close = (variant.close && variant.close.length ? variant.close : f.close) || f.foils;
-  const distractors = [...new Set([...(level >= 3 ? shuffle(close) : []), ...shuffle(f.foils), ...shuffle(close)])]
+  const distractors = [...new Set([...(difficulty.close ? shuffle(close) : []), ...shuffle(f.foils), ...shuffle(close)])]
     .filter(option => option !== answer).slice(0, count - 1);
   // Pathophysiology concepts include at least five distractors per topic.
   const options = shuffle([answer, ...distractors]);
-  return { fact: f, answer, answers: [answer], isSelectAll: false, rationale: variant.why || f.why, stem, options, level, isReview };
+  const rationale = variant.why || f.why;
+  // Each alternative explains a different curated answer. Prefer the actual
+  // distractors, then the same subsection; specialized subsections fall back
+  // to other explanations from the same lecture topic.
+  const related = factsFor(f.bank).filter(other => other.conceptId !== f.conceptId
+    && other.why !== rationale);
+  const explanations = [...new Set([
+    ...shuffle(related.filter(other => distractors.includes(other.answer))).map(other => other.why),
+    ...shuffle(related.filter(other => other.subsectionId === f.subsectionId && other.topic === f.topic)).map(other => other.why),
+    ...shuffle(related.filter(other => other.topic === f.topic)).map(other => other.why),
+  ])].slice(0, Math.max(0, difficulty.rationales - 1));
+  const rationaleOptions = difficulty.rationales ? shuffle([rationale, ...explanations]) : [];
+  return { fact: f, answer, answers: [answer], isSelectAll: false, rationale, rationaleOptions, stem, options, level, isReview };
 }
 function fillQueue() {
   if (activeGate && prepared.length >= PREFETCH) return;
@@ -241,13 +272,12 @@ function fillQueue() {
   }
 }
 function takeQuestion(conceptId: string | null, usedInGate: Set<string>): PreparedQuestion {
-  // A due review overrides same-concept grouping, even during a 3-question
-  // attack. If no retest is due, every question in a combat check stays
-  // inside the original concept and uses a different subsection.
-  const due = dueReview(state.selected, usedInGate);
-  const fact = due || chooseFresh(state.selected, usedInGate, conceptId)
-    || chooseFresh(state.selected, usedInGate)
-    || factsFor(state.selected)[0];
+  // A due review can anchor the next check. Once anchored, even newly due
+  // reviews must stay in that concept, using an unused subsection. Other
+  // concepts' reviews wait for the next combat check rather than breaking it.
+  const due = dueReview(state.selected, usedInGate, conceptId);
+  const fact = due || chooseFresh(state.selected, usedInGate, conceptId);
+  if (!fact) throw new Error("PathoRogue needs an unused subsection in the current concept");
   const isReview = !!due;
   const pos = prepared.findIndex(q => q.fact.id === fact.id && q.isReview === isReview && q.level === state.banks[state.selected].tier);
   const q = pos < 0 ? makeQuestion(fact, isReview) : prepared.splice(pos, 1)[0];
@@ -339,8 +369,8 @@ const style = `
 @media(max-width:550px){#ng-overlay .ng-dialog{padding:14px}#ng-overlay .ng-answers{grid-template-columns:1fr}#ng-hud{right:5px;top:4px}}
 `;
 
-function initUI() {
-  if (typeof document === "undefined" || hud) return;
+export function initNursingUI() {
+  if (typeof document === "undefined" || !document.body || hud) return;
   const css = document.createElement("style"); css.id = "ng-style"; css.textContent = style; document.head.appendChild(css);
   hud = document.createElement("div"); hud.id = "ng-hud"; document.body.appendChild(hud);
   renderHUD();
@@ -370,9 +400,9 @@ function renderHUD() {
   const subStatus = (f: NursingFact) => {
     const i = learningItem(f);
     if (!i || i.attempts === 0) return "Not started";
-    if (i.mastered) return "Mastered";
+    if (i.mastered) return `Mastered · ${i.correct}/${i.attempts} correct`;
     const remaining = Math.max(0, (i.dueAt || 0) - bank.total);
-    return remaining ? `Review in ${remaining}` : "REVIEW DUE";
+    return `${remaining ? `Review in ${remaining}` : "REVIEW DUE"} · ${i.step}/3 retests · ${i.correct}/${i.attempts} correct`;
   };
   const groups = [...byObjective.entries()].map(([code, concepts]) => {
     const objectiveFacts = [...concepts.values()].flat();
@@ -390,7 +420,7 @@ function renderHUD() {
     }).join("");
     return `<div class="ng-objective"><details data-track-key="${escapeHtml(objectiveKey)}" ${expanded.has(objectiveKey) ? "open" : ""}><summary><strong>${escapeHtml(code)}</strong> — ${escapeHtml(objectiveName)} · ${objConceptsMastered}/${concepts.size} concepts</summary><div class="ng-progress"><i style="width:${Math.round(100*objMastered/objectiveFacts.length)}%"></i></div>${details}</details></div>`;
   }).join("");
-  hud.innerHTML = `<button class="ng-pill" id="ng-toggle">Patho Quiz · ${state.totalAnswers} answered · ${masteredConcepts}/${byConcept.size} concepts</button>${panelOpen ? `<div class="ng-panel"><div class="ng-row"><strong>MASTERY TRACKER</strong><button class="ng-action" id="ng-close">Collapse</button></div><div class="ng-metrics"><div class="ng-metric"><b>${state.totalAnswers}</b><small>Total answers</small></div><div class="ng-metric"><b>${state.totalAnswers ? Math.round(100 * state.correctAnswers / state.totalAnswers) : 0}%</b><small>Accuracy</small></div><div class="ng-metric"><b>${masteredConcepts}/${byConcept.size}</b><small>Concepts mastered</small></div></div><div class="ng-row"><span>Subject</span><strong>Pathophysiology only</strong></div><div class="ng-row"><span>Battle checks</span><strong>Attack 3 · Dodge 2</strong></div><div class="ng-row"><span>Difficulty</span><strong>${LEVELS[bank.tier]} (${bank.tier + 1}/10)</strong></div><div class="ng-row"><span>Concepts covered</span><strong>${seenConcepts}/${byConcept.size}</strong></div><div class="ng-row"><span>Subsections mastered</span><strong>${masteredSubsections}/${facts.length}</strong></div><div class="ng-row"><span>Subsections seen</span><strong>${seenSubsections}/${facts.length}</strong></div><div class="ng-row"><span>Pending subsection reviews</span><strong>${pending} · ${due} due</strong></div><div class="ng-row"><span>Objectives fully mastered</span><strong>${masteredObjectives}/${byObjective.size}</strong></div><div class="ng-row"><span>Difficulty streaks (+ / −)</span><strong>${bank.rightStreak}/10 · ${bank.wrongStreak}/3</strong></div><div class="ng-row"><span>Prefetched prompts</span><strong>${prepared.length}/${PREFETCH}</strong></div><div class="ng-scroll">${groups}</div><div class="ng-row"><button class="ng-action" id="ng-export">Export progress</button><button class="ng-action" id="ng-import">Import progress</button><input style="display:none" type="file" id="ng-file" accept="application/json,.json"/></div><p class="ng-note">A concept becomes mastered only after every subsection is mastered. Missed subsections follow their own 10/20/50 schedule. Progress is local; use export/import to move between devices.</p></div>` : ""}`;
+  hud.innerHTML = `<button class="ng-pill" id="ng-toggle">Patho Quiz · ${state.totalAnswers} answered · ${masteredConcepts}/${byConcept.size} concepts</button>${panelOpen ? `<div class="ng-panel"><div class="ng-row"><strong>MASTERY TRACKER</strong><button class="ng-action" id="ng-close">Collapse</button></div><div class="ng-metrics"><div class="ng-metric"><b>${state.totalAnswers}</b><small>Total answers</small></div><div class="ng-metric"><b>${state.totalAnswers ? Math.round(100 * state.correctAnswers / state.totalAnswers) : 0}%</b><small>Accuracy</small></div><div class="ng-metric"><b>${masteredConcepts}/${byConcept.size}</b><small>Concepts mastered</small></div></div><div class="ng-row"><span>Subject</span><strong>Pathophysiology only</strong></div><div class="ng-row"><span>Battle checks</span><strong>Attack 3 · Dodge 2</strong></div><div class="ng-row"><span>Difficulty</span><strong>${LEVELS[bank.tier]} (${bank.tier + 1}/10)</strong></div><div class="ng-row"><span>Correct answers</span><strong>${state.correctAnswers}/${state.totalAnswers}</strong></div><div class="ng-row"><span>Concepts covered</span><strong>${seenConcepts}/${byConcept.size}</strong></div><div class="ng-row"><span>Subsections mastered</span><strong>${masteredSubsections}/${facts.length}</strong></div><div class="ng-row"><span>Subsections seen</span><strong>${seenSubsections}/${facts.length}</strong></div><div class="ng-row"><span>Pending subsection reviews</span><strong>${pending} · ${due} due</strong></div><div class="ng-row"><span>Objectives fully mastered</span><strong>${masteredObjectives}/${byObjective.size}</strong></div><div class="ng-row"><span>Difficulty streaks (+ / −)</span><strong>${bank.rightStreak}/10 · ${bank.wrongStreak}/3</strong></div><div class="ng-row"><span>Prefetched prompts</span><strong>${prepared.length}/${PREFETCH}</strong></div><div class="ng-scroll">${groups}</div><div class="ng-row"><button class="ng-action" id="ng-export">Export progress</button><button class="ng-action" id="ng-import">Import progress</button><input style="display:none" type="file" id="ng-file" accept="application/json,.json"/></div><p class="ng-note">A concept becomes mastered only after every subsection is mastered. Missed subsections follow their own 10/20/50 schedule. Progress is local; use export/import to move between devices.</p></div>` : ""}`;
   hud.querySelector("#ng-toggle")?.addEventListener("click", () => { panelOpen = !panelOpen; renderHUD(); });
   hud.querySelector("#ng-close")?.addEventListener("click", () => { panelOpen = false; renderHUD(); });
   hud.querySelector("#ng-export")?.addEventListener("click", () => {
@@ -418,6 +448,7 @@ function blockGameplayKeys(event: KeyboardEvent) {
   if (event.type === "keydown" && !event.repeat) {
     if (/^[1-6]$/.test(event.key)) {
       const index = Number(event.key) - 1;
+      shade?.querySelector<HTMLButtonElement>(`button[data-rationale="${index}"]:not([disabled])`)?.click();
       shade?.querySelector<HTMLButtonElement>(`button[data-answer="${index}"]:not([disabled])`)?.click();
     } else if (event.key === "Enter") {
       (shade?.querySelector("#ng-continue:not([disabled])") as HTMLButtonElement | null)?.click();
@@ -429,12 +460,12 @@ function blockGameplayKeys(event: KeyboardEvent) {
 }
 
 /** Attack requires 3 correct answers, defense 2; one incorrect ends the check.
- * Without a due subsection review, questions within one check stay in the
- * same concept and use distinct subsections. The game then performs its native
+ * Questions within one check stay in the same concept and use distinct
+ * subsections. The game then performs its native
  * accuracy roll exactly as before. */
 export async function openNursingGate(mode: Gate): Promise<boolean> {
   if (typeof document === "undefined") return false;
-  initUI();
+  initNursingUI();
   if (activeGate) return false;
   activeGate = true;
   const required = mode === "attack" ? 3 : 2;
@@ -451,7 +482,7 @@ export async function openNursingGate(mode: Gate): Promise<boolean> {
   try {
     for (let n = 1; n <= required; n++) {
       const q = takeQuestion(conceptId, usedInGate);
-      // The first concept anchors the check; due reviews may interrupt it.
+      // The first concept anchors every question in this check, including reviews.
       if (!conceptId) conceptId = q.fact.conceptId;
       usedInGate.add(q.fact.id);
       const answer = await askQuestion(q, n, required, mode);
@@ -473,13 +504,21 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
     if (!shade) { resolve(false); return; }
     const bank = state.banks[q.fact.bank];
     const challenge = mode === "attack" ? "EARN YOUR ATTACK'S ACCURACY ROLL" : "EARN YOUR CHANCE TO DODGE";
-    shade.innerHTML = `<div class="ng-dialog"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-response" aria-live="polite"></div><p class="ng-note">${required} correct answers required. A mistake causes your attack to miss or prevents your dodge chance. Pokémon immunity and Protect effects still work normally.</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
+    shade.innerHTML = `<div class="ng-dialog" data-mode="${mode}" data-concept="${escapeHtml(q.fact.conceptId)}" data-subsection="${escapeHtml(q.fact.subsectionId)}" data-level="${q.level + 1}" data-review="${q.isReview}"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}${q.rationaleOptions.length ? " · ANSWER AND EXPLANATION REQUIRED" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-explanations" aria-live="polite"></div><div id="ng-response" aria-live="polite"></div><p class="ng-note">${required} correct answers required. A mistake causes your attack to miss or prevents your dodge chance. Pokémon immunity and Protect effects still work normally.</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
     let answered = false;
     const selectedOptions = new Set<string>();
+    let selectedRationale: string | null = null;
     const grade = () => {
       if (answered) return;
       answered = true;
-      const correct = selectedOptions.size === q.answers.length && q.answers.every(answer => selectedOptions.has(answer));
+      const correct = selectedOptions.size === q.answers.length && q.answers.every(answer => selectedOptions.has(answer))
+        && (!q.rationaleOptions.length || selectedRationale === q.rationale);
+      shade?.querySelectorAll<HTMLButtonElement>("button[data-rationale]").forEach(button => {
+        button.disabled = true;
+        const option = q.rationaleOptions[Number(button.dataset.rationale)];
+        if (option === q.rationale) button.classList.add("ng-right");
+        else if (option === selectedRationale) button.classList.add("ng-wrong");
+      });
       shade?.querySelectorAll<HTMLButtonElement>("button[data-answer]").forEach(button => {
         button.disabled = true;
         const option = q.options[Number(button.dataset.answer)];
@@ -503,10 +542,30 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
         button.setAttribute("aria-pressed", String(selectedOptions.has(option)));
       } else {
         selectedOptions.add(option);
-        grade();
+        if (!q.rationaleOptions.length) { grade(); return; }
+        // Lock the interpretation before requesting its explanation. Neither
+        // component receives correctness feedback until both are submitted.
+        shade?.querySelectorAll<HTMLButtonElement>("button[data-answer]").forEach(answerButton => {
+          answerButton.disabled = true;
+          if (answerButton === button) answerButton.classList.add("ng-selected");
+        });
+        const explanations = shade?.querySelector<HTMLElement>("#ng-explanations");
+        if (!explanations) { resolve(false); return; }
+        explanations.innerHTML = `<p><strong>Choose the explanation that supports your interpretation.</strong> Both selections must be correct.</p><div class="ng-answers">${q.rationaleOptions.map((option, i) => `<button class="ng-option" type="button" data-rationale="${i}"><b>${i + 1}.</b> ${escapeHtml(option)}</button>`).join("")}</div>`;
+        explanations.querySelectorAll<HTMLButtonElement>("button[data-rationale]").forEach(rationaleButton => rationaleButton.addEventListener("click", () => {
+          selectedRationale = q.rationaleOptions[Number(rationaleButton.dataset.rationale)];
+          grade();
+        }));
+        explanations.querySelector<HTMLButtonElement>("button[data-rationale]")?.focus();
       }
     }));
     shade.querySelector("#ng-submit")?.addEventListener("click", grade);
     (shade.querySelector("button[data-answer]") as HTMLElement | null)?.focus();
   });
+}
+
+// Show the tracker when the bundled mod loads, including on the title screen.
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initNursingUI, { once: true });
+  else initNursingUI();
 }

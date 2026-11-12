@@ -18,11 +18,6 @@ on:
         required: false
         type: boolean
         default: false
-      branch:
-        description: 'PokeRogue branch to build from'
-        required: false
-        type: string
-        default: 'main'
       version_override:
         description: 'Override the app version baked into this build (e.g. 1.12.0.0). Lets the installed app report an older version than pagefaultgames/pokerogue currently declares, for testing the update-checker against real existing releases. Leave blank to use whatever upstream currently has.'
         required: false
@@ -34,6 +29,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      POKEROGUE_COMMIT: '31665e5a420fe6c619c84173b9c679b33eadf861'
+      # Phaser 4 uses a different rendering pipeline. The optional Phaser 3
+      # memory patches target removed classes and are unrelated to the quiz.
+      MEMORY_PATCHES_ENABLED: 'false'
 
     steps:
       - name: Checkout repo
@@ -42,16 +43,24 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Install pnpm
-        run: npm install -g pnpm
+        run: npm install -g pnpm@10.34.5
 
       - name: Configure Git line endings
         run: git config --global core.autocrlf false
 
-      - name: Clone PokeRogue fork
-        run: git clone --recurse-submodules --depth 1 --branch ${{ inputs.branch || 'main' }} https://github.com/pagefaultgames/pokerogue.git pokerogue-src
+      - name: Fetch pinned PokeRogue and asset revisions
+        shell: bash
+        run: |
+          git init pokerogue-src
+          git -C pokerogue-src remote add origin https://github.com/pagefaultgames/pokerogue.git
+          git -C pokerogue-src fetch --depth 1 origin "$POKEROGUE_COMMIT"
+          git -C pokerogue-src checkout --detach FETCH_HEAD
+          git -C pokerogue-src submodule update --init --recursive --depth 1
+          git -C pokerogue-src rev-parse HEAD
+          git -C pokerogue-src submodule status
 
       - name: Get PokeRogue version
         id: pokerogue_version
@@ -65,6 +74,9 @@ jobs:
 
       - name: Integrate Pathophysiology questions into original PokéRogue
         run: node pathorogue/install.cjs pokerogue-src
+
+      - name: Test Pathophysiology selection and battle enforcement
+        run: node --test pathorogue/*.test.cjs
 
       - name: Verify 687-subsection Pathophysiology gate
         shell: bash
@@ -115,6 +127,9 @@ jobs:
         with:
           dev: ${{ inputs.dev }}
 
+      - name: Keep PathoRogue renderer from replacing itself with vanilla updates
+        run: node pathorogue/protect-mod.cjs pokerogue-src renderer
+
       - name: Build PokeRogue
         working-directory: pokerogue-src
         env:
@@ -124,6 +139,9 @@ jobs:
       - name: Apply post-build patches
         shell: bash
         run: bash scripts/apply-post-build-patches.sh exe
+
+      - name: Verify compiled quiz runtime is in build output
+        run: node pathorogue/verify-build.cjs --dist pokerogue-src/dist
 
       - name: Copy Electron config files into place
         shell: bash
@@ -170,30 +188,44 @@ jobs:
         id: old_ver
         uses: ./.github/actions/get-electron-package-version
 
+      - name: Keep PathoRogue desktop from installing vanilla updates
+        run: node pathorogue/protect-mod.cjs pokerogue-src desktop
+
       - name: Generate Windows EXE
         working-directory: pokerogue-src
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           CSC_LINK: ''
           WIN_CSC_LINK: ''
-        run: pnpm electron-builder --win portable --publish never --config electron-builder.json --config.extraMetadata.version=${{ steps.old_ver.outputs.version }}
+        run: pnpm electron-builder --win portable --publish never --config electron-builder.json --config.extraMetadata.version=${{ steps.old_ver.outputs.version }} --config.directories.output=release-pathorogue --config.artifactName=PathoRogueOffline.exe
 
       - name: Rename and save EXE
         id: exe_path
-        shell: bash
+        shell: pwsh
         run: |
-          FILE=$(find -type f -name "PokeRogue*Offline*.exe" | head -n1)
-          if [ "${{ inputs.dev }}" = "true" ]; then
-            OUTPUT="./PathoRogueOffline-dev.exe"
-          else
-            OUTPUT="./PathoRogueOffline.exe"
-          fi
-          mv "$FILE" "$OUTPUT"
-          echo "exe=$OUTPUT" >> $GITHUB_OUTPUT
+          $portable = Join-Path $PWD 'pokerogue-src/release-pathorogue/PathoRogueOffline.exe'
+          if (!(Test-Path -LiteralPath $portable)) { throw 'Portable EXE was not produced at the expected path' }
+          $outputName = if ('${{ inputs.dev }}' -eq 'true') { 'PathoRogueOffline-dev.exe' } else { 'PathoRogueOffline.exe' }
+          Copy-Item -LiteralPath $portable -Destination $outputName
+          "exe=$outputName" >> $env:GITHUB_OUTPUT
+
+      - name: Launch the actual portable EXE offline and verify quiz tracker
+        run: node pathorogue/verify-build.cjs --exe ${{ steps.exe_path.outputs.exe }} --report-dir verification
+
+      - name: Upload runtime verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PathoRogue-Windows-verification
+          path: verification/
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: PathoRogueOffline-Windows${{ inputs.dev && '-dev' || '' }}
           path: ${{ steps.exe_path.outputs.exe }}
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
