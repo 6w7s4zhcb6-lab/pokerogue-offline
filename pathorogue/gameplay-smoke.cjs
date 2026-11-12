@@ -135,7 +135,7 @@ async function installAudioProbe(cdp) {
 async function readEffects(cdp) {
   return evaluate(cdp, `(()=>{
     const root=document.querySelector('#ng-overlay .ng-effects');if(!root)return null;
-    const stars=[...root.querySelectorAll('.ng-star')].map(s=>({color:s.dataset.color||getComputedStyle(s).getPropertyValue('--star-color').trim()||getComputedStyle(s).color,fill:getComputedStyle(s).fill}));
+    const stars=[...root.querySelectorAll('.ng-star')].map(s=>({color:s.dataset.color||getComputedStyle(s).getPropertyValue('--star-color').trim()||getComputedStyle(s).color,fill:getComputedStyle(s).fill,background:getComputedStyle(s).backgroundColor}));
     const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState}))}));
     return {dataset:{...root.dataset},stars,balls,confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept})),pointerEvents:getComputedStyle(root).pointerEvents};
   })()`);
@@ -206,6 +206,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   assert.equal(updated.feedback.startsWith("Correct"), correct, `Unexpected grade for ${policy}: ${updated.feedback}`);
   let effects;
   if (effectTest) {
+    if (!correct) await delay(230); // Inspect red after the short color transition.
     effects = { prompt: promptEffects, feedback: await readEffects(cdp) };
     assert(effects.feedback, 'Effects disappeared before correctness feedback');
     const audio = await evaluate(cdp, `window.__pathorogueAudioProbe.events.slice(${audioStart})`);
@@ -219,6 +220,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     } else {
       assert.equal(effects.feedback.stars.length, 3, 'Wrong feedback lost the three stars');
       assert(effects.feedback.stars.every(s => s.color.toLowerCase() === '#ff425c'), `Wrong feedback stars are not red: ${JSON.stringify(effects.feedback.stars)}`);
+      assert(effects.feedback.stars.every(s => s.background === 'rgb(255, 66, 92)'), 'Rendered star tint did not finish changing to red');
     }
     assert.equal(effects.feedback.dataset.feedback, correct ? 'correct' : 'wrong', 'Effects do not match actual question grade');
     assert(Number(effects.feedback.dataset[correct ? 'soundCorrectCount' : 'soundWrongCount']) > 0, 'Feedback did not confirm audio playback started');
