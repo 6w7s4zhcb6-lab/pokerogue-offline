@@ -122,6 +122,12 @@ jobs:
             ${{ github.workspace }}\docs\appIcon.ico
           Write-Host "ICO created at ${{ github.workspace }}\docs\appIcon.ico"
 
+      - name: Install shared offline build flag independently of memory patches
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pokerogue-src/src/system/offline | Out-Null
+          Copy-Item -LiteralPath new-files/src/system/offline/scooom-dev.ts -Destination pokerogue-src/src/system/offline/scooom-dev.ts
+
       - name: Inject Scooom dev-build flag
         uses: ./.github/actions/inject-scooom-dev-flag
         with:

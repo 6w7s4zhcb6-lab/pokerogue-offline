@@ -92,28 +92,38 @@ async function evaluate(cdp, expression) {
   return result.result.value;
 }
 
-async function launchExecutable(exe) {
+async function launchExecutable(exe, options = {}) {
   assert(fs.existsSync(exe), `Executable missing: ${exe}`);
   const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "pathorogue-smoke-"));
   const port = await freePort();
-  const child = spawn(exe, [
+  // Local diagnosis only. CI intentionally uses Chromium's normal sandbox.
+  const testNoSandbox = process.env.PATHOROGUE_TEST_NO_SANDBOX === "1";
+  const launchArgs = [
+    ...(options.appPath ? [path.resolve(options.appPath)] : []),
     `--remote-debugging-port=${port}`,
     "--remote-debugging-address=127.0.0.1",
     `--user-data-dir=${userData}`,
     "--host-resolver-rules=MAP * ~NOTFOUND",
     "--no-proxy-server",
     "--disable-gpu-sandbox",
-  ], { windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined }, stdio: ["ignore", "pipe", "pipe"] });
+    ...(testNoSandbox ? ["--no-sandbox"] : []),
+  ];
+  const child = spawn(exe, launchArgs, { windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined }, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", data => { output += data; });
   child.stderr.on("data", data => { output += data; });
   let launchError;
+  let exitedAt = 0;
+  let exitCode = null;
+  let exitSignal = null;
   child.on("error", error => { launchError = error; });
+  child.on("exit", (code, signal) => { exitedAt = Date.now(); exitCode = code; exitSignal = signal; });
   const cleanup = () => {
     try { execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); } catch {}
   };
   try {
-    const deadline = Date.now() + 180000;
+    const timeoutMs = options.timeoutMs || 180000;
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (launchError) throw launchError;
       try {
@@ -124,19 +134,27 @@ async function launchExecutable(exe) {
           await cdp.send("Runtime.enable");
           await cdp.send("Network.enable");
           await cdp.send("Network.setBlockedURLs", { urls: ["http://*", "https://*"] });
-          return { cdp, child, userData, cleanup, output: () => output };
+          return { cdp, child, userData, cleanup, testNoSandbox, appPath: options.appPath || null, output: () => output };
         }
       } catch (error) { if (Date.now() >= deadline) throw error; }
+      if (exitedAt && (exitCode !== 0 || Date.now() - exitedAt > 2000)) {
+        const windowsCode = exitCode === null ? "" : ` (0x${(exitCode >>> 0).toString(16)})`;
+        throw Error(`Executable exited before opening a renderer: code=${exitCode}${windowsCode}, signal=${exitSignal || "none"}.\n${output}`);
+      }
       await delay(500);
     }
-    throw Error(`Portable EXE did not expose a renderer within 180 seconds.\n${output}`);
-  } catch (error) { cleanup(); throw error; }
+    throw Error(`Executable did not expose a renderer within ${timeoutMs / 1000} seconds.\n${output}`);
+  } catch (error) {
+    error.launchDiagnostics = { exitCode, exitSignal, testNoSandbox, appPath: options.appPath || null, output };
+    cleanup(); throw error;
+  }
 }
 
-async function verifyExecutable(exe, reportDir) {
-  const session = await launchExecutable(exe);
+async function verifyExecutable(exe, reportDir, options = {}) {
   await fsp.mkdir(reportDir, { recursive: true });
+  let session;
   try {
+    session = await launchExecutable(exe, options);
     const deadline = Date.now() + 120000;
     let hud;
     while (Date.now() < deadline) {
@@ -158,10 +176,14 @@ async function verifyExecutable(exe, reportDir) {
     const report = {
       verifiedAt: new Date().toISOString(),
       executable: path.basename(exe),
+      testNoSandbox: session.testNoSandbox,
+      unbundledAppPath: session.appPath,
       sha256: await hashFile(exe),
       offline: { externalDNSBlocked: true, rendererHTTPBlocked: true, loadedURL: url },
       checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true },
-      scope: "Packaged portable EXE startup and tracker smoke test; battle enforcement is covered by separate battle tests.",
+      scope: session.appPath
+        ? "Unbundled Electron diagnostic launch; this does not verify the downloadable portable EXE."
+        : "Packaged portable EXE startup and tracker smoke test; battle enforcement requires separate battle verification.",
       tracker,
       errors: session.cdp.events.filter(event => event.method === "Runtime.exceptionThrown"),
     };
@@ -174,22 +196,23 @@ async function verifyExecutable(exe, reportDir) {
     await fsp.writeFile(path.join(reportDir, "packaged-exe-failure.json"), JSON.stringify({
       verifiedAt: new Date().toISOString(), executable: path.basename(exe),
       error: String(error.stack || error),
-      exceptions: session.cdp.events.filter(event => event.method === "Runtime.exceptionThrown"),
+      launchDiagnostics: error.launchDiagnostics || null,
+      exceptions: session?.cdp.events.filter(event => event.method === "Runtime.exceptionThrown") || [],
     }, null, 2));
-    await fsp.writeFile(path.join(reportDir, "packaged-exe-console.log"), session.output());
+    await fsp.writeFile(path.join(reportDir, "packaged-exe-console.log"), session?.output() || error.launchDiagnostics?.output || "");
     try {
       const shot = await session.cdp.send("Page.captureScreenshot", { format: "png" });
       await fsp.writeFile(path.join(reportDir, "packaged-exe-failure.png"), Buffer.from(shot.data, "base64"));
     } catch {}
     throw error;
-  } finally { session.cdp.close(); session.cleanup(); }
+  } finally { session?.cdp.close(); session?.cleanup(); }
 }
 
 async function main() {
   const args = process.argv.slice(2);
   const at = name => args.includes(name) ? args[args.indexOf(name) + 1] : null;
   if (at("--dist")) console.log(JSON.stringify(verifyDist(path.resolve(at("--dist"))), null, 2));
-  if (at("--exe")) await verifyExecutable(path.resolve(at("--exe")), path.resolve(at("--report-dir") || "verification"));
+  if (at("--exe")) await verifyExecutable(path.resolve(at("--exe")), path.resolve(at("--report-dir") || "verification"), { appPath: at("--app") });
   assert(at("--dist") || at("--exe"), "Usage: node verify-build.cjs --dist DIST | --exe EXE --report-dir DIR");
 }
 
