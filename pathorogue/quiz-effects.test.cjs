@@ -66,10 +66,11 @@ function environment({ reduced = false, gameAudio = null } = {}) {
       for (;;) {
         const next = [...tasks].filter(([, task]) => task.time <= deadline).sort((a, b) => a[1].time - b[1].time)[0];
         if (!next) break;
-        now = next[1].time; tasks.delete(next[0]); next[1].callback();
+        now = Math.max(now, next[1].time); tasks.delete(next[0]); next[1].callback();
       }
       now = deadline;
     },
+    delayCallbacks(ms) { now += ms; },
   };
 }
 function find(parent, className) {
@@ -162,4 +163,31 @@ test("dispose removes effects, cancels RAF/timers and resolves a pending complet
   assert(!overlay.classList.contains("ng-with-effects"));
   effects.answer(true); effects.showQuestion("a"); env.advance(3000);
   assert.equal(env.tasks.size, 0);
+});
+
+test("a delayed bounce callback cannot let the predicted deadline dismiss an ongoing completion spin", async () => {
+  const env = environment(), overlay = env.overlay(), effects = env.create(overlay, "attack", ["a"]);
+  effects.showQuestion("a"); effects.answer(true, true);
+  let done = false;
+  const settled = effects.settled().then(() => { done = true; });
+  const active = find(overlay, "ng-ball").find(ball => ball.dataset.side === "player");
+  // Simulate a renderer busy longer than the originally predicted whole
+  // bounce+spin. Overdue callbacks resume at actual time rather than time 420.
+  env.delayCallbacks(2000);
+  env.advance(0);
+  await Promise.resolve();
+  assert(active.classList.contains("is-spinning"));
+  assert.equal(done, false);
+  let lateDone = false;
+  const lateWait = effects.settled().then(() => { lateDone = true; });
+  await Promise.resolve();
+  assert.equal(lateDone, false, "A waiter created after the old deadline must still await the active spin");
+  env.advance(849); await Promise.resolve();
+  assert(active.classList.contains("is-spinning"));
+  assert.equal(done, false);
+  env.advance(1); await Promise.all([settled, lateWait]);
+  assert(!active.classList.contains("is-spinning"));
+  assert.equal(done, true);
+  assert.equal(lateDone, true);
+  effects.dispose(); assert.equal(env.tasks.size, 0);
 });

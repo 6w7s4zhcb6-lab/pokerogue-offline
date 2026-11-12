@@ -166,6 +166,8 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
   let currentColor = "hsl(0 88% 65%)";
   let lastFinish = 0;
   let animationSerial = 0;
+  let animationDone: Promise<void> = Promise.resolve();
+  let resolveAnimation: (() => void) | null = null;
   let context: AudioContext | null = null;
   let masterGain: GainNode | null = null;
   const oscillators = new Set<OscillatorNode>();
@@ -352,6 +354,9 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
       root.dataset[countKey] = String(Number(root.dataset[countKey] || 0) + 1);
       playSound(correct);
       if (!correct) {
+        ++animationSerial;
+        activeBall.classList.remove("is-bouncing", "is-spinning");
+        resolveAnimation?.(); resolveAnimation = null;
         bursts.forEach(burst => { cancelAnimationFrame(burst.raf); burst.wrapper.remove(); });
         bursts.clear();
         tintStars([WRONG_COLOR, WRONG_COLOR, WRONG_COLOR]);
@@ -360,6 +365,12 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
       }
       confetti();
       const token = ++animationSerial;
+      resolveAnimation?.();
+      animationDone = new Promise<void>(resolve => { resolveAnimation = resolve; });
+      const finishAnimation = () => {
+        if (animationSerial !== token) return;
+        resolveAnimation?.(); resolveAnimation = null;
+      };
       const bounce = reducedMotion ? 60 : BOUNCE_MS;
       const spin = reducedMotion ? 60 : SPIN_MS;
       activeBall.classList.remove("is-bouncing", "is-spinning");
@@ -370,22 +381,35 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
         activeBall.classList.remove("is-bouncing");
         if (complete) {
           activeBall.classList.add("is-spinning");
-          schedule(() => { if (animationSerial === token) activeBall.classList.remove("is-spinning"); }, spin);
-        }
+          schedule(() => {
+            if (animationSerial !== token) return;
+            activeBall.classList.remove("is-spinning");
+            finishAnimation();
+          }, spin);
+        } else finishAnimation();
       }, bounce);
       lastFinish = Math.max(lastFinish, performance.now() + bounce + (complete ? spin : 0), performance.now() + 340);
     },
     settled(): Promise<void> {
-      if (disposed || lastFinish <= performance.now()) return Promise.resolve();
+      if (disposed || (!resolveAnimation && lastFinish <= performance.now())) return Promise.resolve();
       return new Promise(resolve => {
         const finish = () => { pendingSettles.delete(finish); resolve(); };
         pendingSettles.add(finish);
-        schedule(finish, Math.max(0, lastFinish - performance.now()) + 24);
+        let deadlineReady = lastFinish <= performance.now();
+        let animationReady = !resolveAnimation;
+        const maybeFinish = () => { if (deadlineReady && animationReady) finish(); };
+        if (!deadlineReady) schedule(() => { deadlineReady = true; maybeFinish(); }, Math.max(0, lastFinish - performance.now()) + 24);
+        // A busy renderer can run the bounce callback late. Wait for the real
+        // scheduled spin-end callback, rather than predicting its end from the
+        // answer timestamp and dismissing an animation that only just started.
+        if (!animationReady) void animationDone.then(() => { animationReady = true; maybeFinish(); });
+        maybeFinish();
       });
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      resolveAnimation?.(); resolveAnimation = null;
       timers.forEach(timer => clearTimeout(timer)); timers.clear();
       bursts.forEach(burst => { cancelAnimationFrame(burst.raf); burst.wrapper.remove(); }); bursts.clear();
       oscillators.forEach(oscillator => { try { oscillator.stop(); oscillator.disconnect(); } catch { /* Already ended. */ } });

@@ -170,26 +170,117 @@ function ballAnimating(ball, name) {
     || String(ball.animation).includes(stem) || ball.animations.some(a => String(a.name).includes(stem) && a.state === 'running'));
 }
 
+async function armQuestionProbe(cdp) {
+  function installInRenderer() {
+    window.__pathorogueQuestionProbe?.disconnect();
+    const overlay = document.querySelector('#ng-overlay');
+    const root = overlay?.querySelector('.ng-effects');
+    if (!root) throw Error('Quiz effects absent before grading');
+    const subsection = overlay.querySelector('.ng-dialog').dataset.subsection;
+    const question = () => {
+      const d = overlay.querySelector('.ng-dialog');
+      if (!d) return null;
+      return { mode: d.dataset.mode, concept: d.dataset.concept, subsection: d.dataset.subsection,
+        level: Number(d.dataset.level), review: d.dataset.review === 'true',
+        kicker: d.querySelector('.ng-kicker')?.textContent, selectAll: d.textContent.includes('SELECT ALL THAT APPLY'),
+        options: [...d.querySelectorAll('button[data-answer]')].map(b => ({ index: Number(b.dataset.answer), text: b.textContent.replace(/^[A-F]\.\s*/, ''), disabled: b.disabled })),
+        rationales: [...d.querySelectorAll('button[data-rationale]')].map(b => ({ index: Number(b.dataset.rationale), text: b.textContent.replace(/^\d+\.\s*/, ''), disabled: b.disabled })),
+        feedback: d.querySelector('.ng-feedback')?.textContent || null };
+    };
+    const effects = () => ({ connected: root.isConnected, dataset: { ...root.dataset },
+      stars: [...root.querySelectorAll('.ng-star')].map(s => ({ color: s.dataset.color, background: getComputedStyle(s).backgroundColor })),
+      balls: [...root.querySelectorAll('.ng-ball')].map(b => ({ side: b.dataset.side, state: b.dataset.state, classes: b.className,
+        animation: getComputedStyle(b).animationName, animations: b.getAnimations({ subtree: true }).map(a => ({ name: a.animationName, state: a.playState })) })),
+      confetti: [...root.querySelectorAll('.ng-confetti')].map(c => ({ color: c.dataset.diseaseColor, concept: c.dataset.concept })),
+      pointerEvents: getComputedStyle(root).pointerEvents });
+    const probe = { events: [], feedback: null, continuedAt: null, advancedAt: null, question, effects,
+      audioStart: window.__pathorogueAudioProbe.events.length };
+    const sample = (kind, detail = {}) => {
+      const entry = { kind, at: performance.now(), effects: effects(), ...detail };
+      probe.events.push(entry);
+      return entry;
+    };
+    const animation = event => {
+      if (event.target.closest?.('.ng-effects')) sample(event.type, { animationName: event.animationName, side: event.target.closest('.ng-ball')?.dataset.side });
+    };
+    const observer = new MutationObserver(() => {
+      sample('mutation');
+      if (!overlay.isConnected || question()?.subsection !== subsection) {
+        probe.advancedAt = performance.now();
+        sample(overlay.isConnected ? 'next-question' : 'overlay-removed');
+        probe.disconnect();
+      }
+    });
+    probe.disconnect = () => { observer.disconnect(); overlay.removeEventListener('animationstart', animation, true); overlay.removeEventListener('animationend', animation, true); };
+    probe.sample = sample;
+    probe.captureFeedback = () => {
+      const q = question();
+      if (q?.feedback && !probe.feedback) probe.feedback = { at: performance.now(), question: q, effects: effects() };
+      return q;
+    };
+    probe.continue = () => {
+      const button = overlay.querySelector('#ng-continue:not([disabled])');
+      if (!button) throw Error('Continue control not available after grading');
+      probe.continuedAt = performance.now(); sample('continue-click');
+      button.click(); sample('after-continue');
+    };
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
+      attributeFilter: ['class', 'data-feedback', 'data-audio-state', 'data-sound-correct-count', 'data-sound-wrong-count', 'data-prompt-count'] });
+    overlay.addEventListener('animationstart', animation, true);
+    overlay.addEventListener('animationend', animation, true);
+    sample('armed');
+    window.__pathorogueQuestionProbe = probe;
+    return { prompt: effects(), audioStart: probe.audioStart };
+  }
+  return evaluate(cdp, `(${installInRenderer.toString()})()`);
+}
+
+async function clickQuizControl(cdp, selector, quickContinue) {
+  return evaluate(cdp, `(()=>{
+    const button=document.querySelector(${JSON.stringify(selector)});if(!button)throw Error('Quiz control missing');
+    button.click();
+    const probe=window.__pathorogueQuestionProbe;
+    const question=probe.captureFeedback();
+    if(${!!quickContinue}&&question?.feedback){probe.quickContinueSameTask=true;probe.continue();}
+    return question;
+  })()`);
+}
+
+async function finishQuestionProbe(cdp) {
+  return evaluate(cdp, `new Promise((resolve,reject)=>{
+    const probe=window.__pathorogueQuestionProbe,deadline=performance.now()+6000;
+    const inspect=()=>{
+      if(probe.advancedAt){resolve({feedback:probe.feedback,events:probe.events,continuedAt:probe.continuedAt,advancedAt:probe.advancedAt,quickContinueSameTask:!!probe.quickContinueSameTask,
+        audio:window.__pathorogueAudioProbe.events.slice(probe.audioStart)});return;}
+      if(performance.now()>deadline){probe.disconnect();reject(Error('Quiz animation did not release the next game step'));return;}
+      setTimeout(inspect,20);
+    };inspect();
+  })`);
+}
+
 async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   const fact = bank.find(f => f.conceptId === question.concept && f.subsectionId === question.subsection);
   assert(fact, `Unknown shipped question: ${question.concept}/${question.subsection}`);
   const rightAnswers = question.selectAll ? fact.sata?.right : [fact.answer];
   assert(rightAnswers?.length, "Missing correct answer in local clinical bank");
-  const promptEffects = effectTest ? await readEffects(cdp) : null;
-  const audioStart = effectTest ? await evaluate(cdp, 'window.__pathorogueAudioProbe.events.length') : 0;
+  const finalCorrect = policy === 'correct' && /Question (\d+) of \1$/.test(question.kicker);
+  const probe = effectTest ? await armQuestionProbe(cdp) : null;
+  const click = async selector => effectTest
+    ? clickQuizControl(cdp, selector, finalCorrect)
+    : (await evaluate(cdp, `document.querySelector(${JSON.stringify(selector)}).click()`), readQuestion(cdp));
+  let updated;
   if (policy === "wrong-answer") {
     const wrong = question.options.find(o => !rightAnswers.includes(o.text));
     assert(wrong, "No wrong option available for negative test");
-    await clickIndex(cdp, "data-answer", wrong.index);
+    updated = await click(`button[data-answer="${wrong.index}"]:not([disabled])`);
   } else {
     for (const answer of rightAnswers) {
       const option = question.options.find(o => o.text === answer);
       assert(option, `Expected answer not rendered: ${answer}`);
-      await clickIndex(cdp, "data-answer", option.index);
+      updated = await click(`button[data-answer="${option.index}"]:not([disabled])`);
     }
   }
-  if (question.selectAll) await evaluate(cdp, "document.querySelector('#ng-submit').click()");
-  let updated = await readQuestion(cdp);
+  if (question.selectAll) updated = await click('#ng-submit:not([disabled])');
   if (policy === "wrong-rationale" || question.level >= 6) {
     assert(updated.rationales.length >= 2, "Advanced-tier question did not require a rationale choice");
   }
@@ -198,8 +289,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     const rationale = updated.rationales.find(o => policy === "wrong-rationale" ? o.text !== fact.why : o.text === fact.why);
     assert(rationale, "Expected rationale choice not rendered");
     assert.equal(updated.feedback, null, "Rationale must be required before correctness feedback");
-    await clickIndex(cdp, "data-rationale", rationale.index);
-    updated = await readQuestion(cdp);
+    updated = await click(`button[data-rationale="${rationale.index}"]:not([disabled])`);
   }
   assert(updated.feedback?.includes("Rationale:"), "Graded question must show clinical rationale");
   const correct = policy === "correct";
@@ -207,11 +297,10 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   let effects;
   if (effectTest) {
     if (!correct) await delay(230); // Inspect red after the short color transition.
-    effects = { prompt: promptEffects, feedback: await readEffects(cdp) };
-    assert(effects.feedback, 'Effects disappeared before correctness feedback');
-    const audio = await evaluate(cdp, `window.__pathorogueAudioProbe.events.slice(${audioStart})`);
-    assert(audio.length > 0, `${correct ? 'Correct' : 'Wrong'} answer did not schedule WebAudio output`);
-    effects.audio = audio;
+    // The snapshot is captured inside the same renderer turn as grading. CDP
+    // latency cannot make us miss the short bounce/confetti interval.
+    const captured = await evaluate(cdp, 'window.__pathorogueQuestionProbe.feedback');
+    effects = { prompt: probe.prompt, feedback: captured.effects };
     if (correct) {
       assert(effects.feedback.confetti.length > 0, 'Correct answer did not render confetti');
       assert(effects.feedback.confetti.every(c => c.color === effects.feedback.dataset.diseaseColor && c.concept === question.concept), 'Confetti does not match the current disease color/concept');
@@ -220,39 +309,58 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     } else {
       assert.equal(effects.feedback.stars.length, 3, 'Wrong feedback lost the three stars');
       assert(effects.feedback.stars.every(s => s.color.toLowerCase() === '#ff425c'), `Wrong feedback stars are not red: ${JSON.stringify(effects.feedback.stars)}`);
-      assert(effects.feedback.stars.every(s => s.background === 'rgb(255, 66, 92)'), 'Rendered star tint did not finish changing to red');
+      const rendered = await readEffects(cdp);
+      assert(rendered.stars.every(s => s.background === 'rgb(255, 66, 92)'), 'Rendered star tint did not finish changing to red');
     }
     assert.equal(effects.feedback.dataset.feedback, correct ? 'correct' : 'wrong', 'Effects do not match actual question grade');
-    assert(Number(effects.feedback.dataset[correct ? 'soundCorrectCount' : 'soundWrongCount']) > 0, 'Feedback did not confirm audio playback started');
     const label = correct ? 'correct-feedback' : 'wrong-red';
     const screenshotKey = `${question.mode}-${label}`;
-    if (!effectTest.report.effectScreenshots.includes(screenshotKey)) {
+    if (!finalCorrect && !effectTest.report.effectScreenshots.includes(screenshotKey)) {
       await capture(cdp, effectTest.reportDir, `quiz-effects-${screenshotKey}.png`);
       effectTest.report.effectScreenshots.push(screenshotKey);
     }
   }
-  const finalCorrect = correct && /Question (\d+) of \1$/.test(question.kicker);
-  await evaluate(cdp, "document.querySelector('#ng-continue').click()");
+  if (!effectTest) await evaluate(cdp, "document.querySelector('#ng-continue').click()");
+  else if (!finalCorrect) await evaluate(cdp, 'window.__pathorogueQuestionProbe.continue()');
   if (effectTest && finalCorrect) {
-    // Continue is clicked as soon as feedback arrives. Completion must still
-    // remain visible long enough to animate before the battle can resume.
-    const spinDeadline = Date.now() + 1100;
-    do {
-      effects.completion = await readEffects(cdp);
-      assert(effects.completion, 'Quick Continue skipped the completion animation');
-      if (ballAnimating(activeBall(effects.completion, question.mode), 'spin')) break;
-      await delay(20);
-    } while (Date.now() < spinDeadline);
-    assert(ballAnimating(activeBall(effects.completion, question.mode), 'spin'), 'Gate completion did not spin the active side');
-    assert(effects.completion.balls.filter(b => b !== activeBall(effects.completion, question.mode)).every(b => !ballAnimating(b, 'spin')), 'Gate completion also spun the inactive side');
-    await capture(cdp, effectTest.reportDir, `quiz-effects-${question.mode}-completion.png`);
+    // The observer is authoritative. A screenshot is useful when CI receives
+    // the result while the animation is still visible, but is timing dependent.
+    const visible = await readEffects(cdp);
+    if (visible && ballAnimating(activeBall(visible, question.mode), 'spin')) {
+      await capture(cdp, effectTest.reportDir, `quiz-effects-${question.mode}-completion.png`);
+      effects.completionScreenshot = 'Captured during visible spin';
+    } else effects.completionScreenshot = 'Spin interval recorded in renderer; host arrived after visible interval';
   }
   if (effectTest) {
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const next = await readQuestion(cdp);
-      if (!next || next.subsection !== question.subsection) break;
-      await delay(30);
+    const recorded = await finishQuestionProbe(cdp);
+    effects.audio = recorded.audio;
+    effects.timeline = recorded.events;
+    effects.timing = { gradedAt: recorded.feedback.at, continuedAt: recorded.continuedAt, advancedAt: recorded.advancedAt,
+      continueAfterGradeMs: recorded.continuedAt - recorded.feedback.at, visibleAfterContinueMs: recorded.advancedAt - recorded.continuedAt };
+    assert(recorded.audio.length > 0, `${correct ? 'Correct' : 'Wrong'} answer did not schedule WebAudio output`);
+    assert(recorded.events.some(e => Number(e.effects.dataset[correct ? 'soundCorrectCount' : 'soundWrongCount']) > 0), 'Feedback did not confirm audio playback started');
+    const cssAnimation = (entry, name) => {
+      const ball = activeBall(entry.effects, question.mode);
+      return ball?.animation.includes(name) && ball.animations.some(a => a.name === name && a.state === 'running');
+    };
+    if (correct) {
+      const bounce = recorded.events.find(e => cssAnimation(e, 'ng-quiz-bounce'));
+      assert(bounce, 'Active ball never ran its actual CSS bounce animation');
+      effects.bounce = { observedAt: bounce.at, animation: activeBall(bounce.effects, question.mode).animation,
+        animationEvents: recorded.events.filter(e => e.animationName === 'ng-quiz-bounce').map(({kind,at,side}) => ({kind,at,side})) };
+    }
+    if (finalCorrect) {
+      assert.equal(recorded.quickContinueSameTask, true, 'Quick Continue was not dispatched in the grading turn');
+      effects.timing.continueDispatchedInGradingTurn = true;
+      const spin = recorded.events.find(e => cssAnimation(e, 'ng-quiz-spin'));
+      assert(spin, 'No active-side completion spin was observed before overlay removal');
+      const spinEnd = recorded.events.find(e => e.at > spin.at && !ballAnimating(activeBall(e.effects, question.mode), 'spin'));
+      assert(spinEnd, 'Completion spin did not finish before the battle resumed');
+      assert(spin.at < spinEnd.at && spinEnd.at <= recorded.advancedAt, 'Battle resumed before the completion spin finished');
+      assert(recorded.events.every(e => e.effects.balls.filter(b => b !== activeBall(e.effects, question.mode)).every(b => !ballAnimating(b, 'spin'))), 'Gate completion also spun the inactive side');
+      effects.completion = { spinStartedAt: spin.at, spinFinishedAt: spinEnd.at, overlayRemovedAt: recorded.advancedAt,
+        spinVisibleMs: spinEnd.at - spin.at, snapshot: spin.effects,
+        animationEvents: recorded.events.filter(e => e.animationName === 'ng-quiz-spin').map(({kind,at,side}) => ({kind,at,side})) };
     }
     const next = await readQuestion(cdp);
     assert(!next || next.subsection !== question.subsection, 'Feedback animation never released the next game step');
@@ -395,6 +503,8 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
   try {
     await session.cdp.send("Page.bringToFront");
     await session.cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await session.cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    report.animationTestPreference = 'Normal motion explicitly emulated to verify actual CSS bounce and spin animations; reduced-motion behavior has separate module regression tests.';
     await installAudioProbe(session.cdp);
     let scene = await findScene(session.cdp);
     const basicDone = r => ["attack", "defense"].every(mode => r.gates.some(g => !g.highTier && g.mode === mode && g.passed)
