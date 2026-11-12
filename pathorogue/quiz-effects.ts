@@ -43,6 +43,7 @@ const CSS = `
 .ng-with-effects{padding-top:58px!important;padding-bottom:24px!important}
 .ng-effects .ng-stars{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;opacity:.72}
 .ng-effects .ng-star{position:absolute;inset:0;mask-repeat:no-repeat;mask-position:center;mask-size:cover;mask-mode:luminance;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center;-webkit-mask-size:cover;transition:background-color .18s ease}
+.ng-effects[data-feedback=wrong] .ng-star{transition:none}
 .ng-effects .ng-ball{position:fixed;top:calc(50% - 58px);width:116px;height:116px;z-index:5;pointer-events:none;transform-origin:50% 50%;filter:drop-shadow(0 10px 16px #000a);opacity:.85}
 .ng-effects .ng-ball[data-side=player]{left:max(12px,calc((100vw - 660px)/4 - 58px))}
 .ng-effects .ng-ball[data-side=enemy]{right:max(12px,calc((100vw - 660px)/4 - 58px))}

@@ -296,7 +296,6 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   assert.equal(updated.feedback.startsWith("Correct"), correct, `Unexpected grade for ${policy}: ${updated.feedback}`);
   let effects;
   if (effectTest) {
-    if (!correct) await delay(230); // Inspect red after the short color transition.
     // The snapshot is captured inside the same renderer turn as grading. CDP
     // latency cannot make us miss the short bounce/confetti interval.
     const captured = await evaluate(cdp, 'window.__pathorogueQuestionProbe.feedback');
@@ -309,8 +308,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     } else {
       assert.equal(effects.feedback.stars.length, 3, 'Wrong feedback lost the three stars');
       assert(effects.feedback.stars.every(s => s.color.toLowerCase() === '#ff425c'), `Wrong feedback stars are not red: ${JSON.stringify(effects.feedback.stars)}`);
-      const rendered = await readEffects(cdp);
-      assert(rendered.stars.every(s => s.background === 'rgb(255, 66, 92)'), 'Rendered star tint did not finish changing to red');
+      assert(effects.feedback.stars.every(s => s.background === 'rgb(255, 66, 92)'), `Wrong feedback must render red immediately: ${JSON.stringify(effects.feedback.stars)}`);
     }
     assert.equal(effects.feedback.dataset.feedback, correct ? 'correct' : 'wrong', 'Effects do not match actual question grade');
     const label = correct ? 'correct-feedback' : 'wrong-red';
