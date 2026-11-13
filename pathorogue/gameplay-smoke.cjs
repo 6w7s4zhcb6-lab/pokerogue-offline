@@ -526,6 +526,12 @@ async function installEnemyProbe(cdp,scene) {
  }.toString());
 }
 
+async function collectEnemyProbe(cdp,report) {
+  const observed=await evaluate(cdp,'({actions:window.__clinicalEnemyProbe?.actions||0,damage:window.__clinicalEnemyProbe?.damage||0})');
+  report.enemyProbe ||= {actions:0,damage:0};
+  report.enemyProbe.actions+=observed.actions;report.enemyProbe.damage+=observed.damage;
+}
+
 async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highTier = false, captureTest = false, timeout = 240000 } = {}) {
   const deadline = Date.now() + timeout;
   let active = null;
@@ -669,6 +675,7 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     assert(stored.totalAnswers > 0 && stored.correctAnswers > 0, "Battle answers were not saved offline");
     // Seed valid imported progress only in the disposable test profile to reach
     // an advanced tier without fifty warm-up questions. Quiz rules are intact.
+    await collectEnemyProbe(session.cdp,report);
     await evaluate(session.cdp, `(()=>{const s=JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}));s.banks.patho.tier=5;localStorage.setItem(${JSON.stringify(STORAGE_KEY)},JSON.stringify(s));location.reload();})()`);
     await delay(1500);
     await installAudioProbe(session.cdp);
@@ -689,6 +696,7 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     assert(retentionFacts.some(f=>f.identification),'Retention fixture needs an authored condition-identification item');
     report.retentionObserved=false;
     const recognitionId=retentionFacts.find(f=>f.identification).id,beforeRetention=report.gates.length;
+    await collectEnemyProbe(session.cdp,report);
     await evaluate(session.cdp, '(function(ids,core){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));s.banks.patho.total=Math.max(s.banks.patho.total,30);s.totalAnswers=s.banks.patho.total;for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:id===core?0:1,step:3,dueAt:0,mastered:true,seenCases:["base","advanced"]};s.banks.patho.retentionAt=s.banks.patho.total-29;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+','+JSON.stringify(recognitionId)+')');
     await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.gates.length>beforeRetention);
@@ -704,6 +712,7 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     const reviewStems=new Set([firstReview.stem]);
     for(let round=0;round<2;round++) {
       const start=report.gates.length;
+      await collectEnemyProbe(session.cdp,report);
       await evaluate(session.cdp,'(function(id){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));const i=s.banks.patho.items[id];i.mastered=false;i.misses=1;i.step=0;i.dueAt=s.banks.patho.total;s.banks.patho.retentionAt=s.banks.patho.total;for(const [other,item]of Object.entries(s.banks.patho.items))if(other!==id&&item.misses&&!item.mastered)item.dueAt=s.banks.patho.total+100;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(repeatFact.id)+')');
       await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
       await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.gates.slice(start).some(g=>g.questions.some(q=>q.concept===repeatFact.conceptId&&q.subsection===repeatFact.subsectionId)));
@@ -731,8 +740,8 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     const study=await evaluate(session.cdp,'JSON.parse(localStorage.getItem("pokerogue.study-center.v1"))');
     assert(study.runs.at(-1)?.attempts.length>0,"End-of-run debrief has no actual battle records");
     report.checks.realEndOfRunStudyDebrief=true;
-    const enemy=await evaluate(session.cdp,'({actions:window.__clinicalEnemyProbe.actions,damage:window.__clinicalEnemyProbe.damage})');
-    assert(enemy.actions>0&&enemy.damage>0,'Native enemy actions/damage were not observed');report.enemyProbe=enemy;
+    await collectEnemyProbe(session.cdp,report);
+    assert(report.enemyProbe.actions>0&&report.enemyProbe.damage>0,'Native enemy actions/damage were not observed across the tested battles');
     assert(report.gates.every(g=>g.mode==='attack'||g.mode==='capture'), 'An enemy-defense gate was recorded');
     assert(report.diseaseGuideVerified,'About this condition was not tested after revealing rationales');
     assert(report.identificationObserved,'No first-position condition-identification question was observed');
