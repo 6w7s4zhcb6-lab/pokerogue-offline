@@ -13,7 +13,7 @@ const { spawnSync } = require("node:child_process");
 const { test, after } = require("node:test");
 const root = path.resolve(process.argv[2] || "pokerogue-src");
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pathorogue-battle-"));
-for (const file of ["src/main.ts", "src/phases/move-effect-phase.ts"]) {
+for (const file of ["src/main.ts", "src/phases/move-effect-phase.ts", "src/phases/attempt-capture-phase.ts"]) {
   fs.mkdirSync(path.dirname(path.join(fixture, file)), { recursive: true });
   // Accept either pristine or already-installed source. For the latter, load
   // the exact deployed methods without rerunning a non-idempotent installer.
@@ -27,12 +27,16 @@ if (!source.includes("PATHOROGUE_SUBSECTION_GATE_V1")) {
 }
 const javascript = stripTypeScriptTypes(source.replace(/^import[\s\S]*?;\r?\n/gm, ""), { mode: "strip" })
   .replace("export class MoveEffectPhase", "class MoveEffectPhase") + "\nglobalThis.MoveEffectPhase = MoveEffectPhase;";
+const captureJavascript = stripTypeScriptTypes(fs.readFileSync(path.join(fixture, "src/phases/attempt-capture-phase.ts"), "utf8")
+  .replace(/^import[\s\S]*?;\r?\n/gm, ""), { mode: "strip" })
+  .replace("export class AttemptCapturePhase", "class AttemptCapturePhase") + "\nglobalThis.AttemptCapturePhase = AttemptCapturePhase;";
 after(() => fs.rmSync(fixture, { recursive: true, force: true }));
 
 const enums = new Proxy({}, { get: (_, key) => key });
 function harness(player = true, passed = true) {
   let resolveGate;
   const calls = [];
+  const gateContexts = [];
   const queued = [];
   const stats = { starts: 0, completed: 0, accuracy: 0 };
   const user = {
@@ -82,8 +86,10 @@ function harness(player = true, passed = true) {
     isFieldTargeted: () => false,
     isReflected: () => false,
     applyMoveAttrs() {}, applyAbAttrs() {},
-    openNursingGate(mode) {
+    readQuizBattleContext: () => ({ player: [{ name: "Player" }], enemy: [{ name: "Enemy" }] }),
+    openNursingGate(mode, battle) {
       calls.push(mode);
+      gateContexts.push(battle);
       return new Promise(resolve => { resolveGate = () => resolve(passed); });
     },
   };
@@ -96,7 +102,7 @@ function harness(player = true, passed = true) {
   // lifecycle. hitCheck itself is exercised separately against exact source.
   phase.conductHitChecks = () => [];
   phase.postAnimCallback = () => { stats.completed++; };
-  return { phase, user, target, move, calls, queued, stats, settle: async () => { resolveGate(); await Promise.resolve(); } };
+  return { phase, user, target, move, calls, gateContexts, queued, stats, settle: async () => { resolveGate(); await Promise.resolve(); } };
 }
 
 test("the tracker is initialized from game startup, after polyfills", () => {
@@ -111,6 +117,8 @@ for (const [player, mode] of [[true, "attack"], [false, "defense"]]) {
     const h = harness(player);
     h.phase.start();
     assert.deepEqual(h.calls, [mode]);
+    assert.equal(h.gateContexts[0].player[0].name, "Player");
+    assert.equal(h.gateContexts[0].enemy[0].name, "Enemy");
     assert.equal(h.stats.starts, 0);
     assert.equal(h.stats.completed, 0);
     // Reentering start while pending must not skip the unanswered quiz.
@@ -220,4 +228,145 @@ test("a spread move hitting an ally cannot bypass a failed attack quiz on later 
   assert.equal(next.hitCheck(h.target)[0], "MISS");
   assert.equal(next.hitCheck(ally)[0], "HIT");
   assert.equal(h.calls.length, 1);
+});
+
+function captureHarness() {
+  let resolveGate, rejectGate;
+  const stats = { starts: 0, ends: 0, throws: 0, animations: 0, rng: 0, errors: 0 };
+  const calls = [], messages = [];
+  const target = {
+    hp: 14, y: 10, species: { catchRate: 45 },
+    getTag: () => null, getMaxHp: () => 20, isShiny: () => false,
+    randBattleSeedInt: () => { stats.rng++; return 255; },
+    getFieldPositionOffset: () => [0, 0],
+  };
+  class PokemonPhase {
+    constructor(index) { this.battlerIndex = index; }
+    getPokemon() { return target; }
+    start() { stats.starts++; }
+    end() { stats.ends++; }
+  }
+  const scene = {
+    pokeballCounts: { 0: 5 },
+    phaseManager: { queueMessage: value => messages.push(value) },
+    addFieldSprite() { stats.throws++; return { setOrigin() {} }; },
+    field: { add() {} }, time: { delayedCall() {} },
+    tweens: { add() { stats.animations++; } },
+  };
+  const context = {
+    console: { error() { stats.errors++; } }, PokemonPhase,
+    BattlerIndex: { ENEMY: 2 }, SubstituteTag: class {},
+    globalScene: scene, isBeta: false, isDev: false, IS_TEST: true,
+    getPokeballCatchMultiplier: () => 1, getCriticalCaptureChance: () => 0,
+    getPokeballAtlasKey: () => "pb", audioManager: { playSound() {} },
+    readQuizBattleContext: () => ({ player: [{ name: "Player" }], enemy: [{ name: "Capture target" }] }),
+    openNursingGate(mode, battle) {
+      calls.push({ mode, battle });
+      return new Promise((resolve, reject) => { resolveGate = resolve; rejectGate = reject; });
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(captureJavascript, context);
+  const phase = new context.AttemptCapturePhase(0, 0);
+  return {
+    phase, scene, target, stats, calls, messages,
+    settle: async passed => { resolveGate(passed); await Promise.resolve(); },
+    fail: async () => { rejectGate(Error("Expected test failure")); await Promise.resolve(); },
+  };
+}
+
+test("capture waits for its quiz before spending inventory, rolling odds or animating", async () => {
+  const h = captureHarness();
+  h.phase.start(); h.phase.start();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].mode, "capture");
+  assert.equal(h.calls[0].battle.enemy[0].name, "Capture target");
+  assert.equal(h.scene.pokeballCounts[0], 5);
+  assert.equal(h.stats.starts, 0);
+  assert.equal(h.stats.rng, 0);
+  assert.equal(h.stats.throws, 0);
+  await h.settle(true);
+  assert.equal(h.stats.starts, 1);
+  assert.equal(h.scene.pokeballCounts[0], 4);
+  assert.equal(h.stats.rng, 1);
+  assert.equal(h.stats.throws, 1);
+  assert.equal(h.stats.animations, 1);
+  h.phase.start();
+  assert.equal(h.stats.throws, 1);
+  assert.equal(h.calls.length, 1);
+});
+
+test("a failed capture quiz preserves the ball and ends the selected action", async () => {
+  const h = captureHarness();
+  h.phase.start(); await h.settle(false);
+  assert.equal(h.scene.pokeballCounts[0], 5);
+  assert.equal(h.stats.throws, 0);
+  assert.equal(h.stats.rng, 0);
+  assert.equal(h.stats.ends, 1);
+  assert.equal(h.messages.length, 1);
+  assert.match(h.messages[0], /No Poké Ball was used/);
+  h.phase.start();
+  assert.equal(h.stats.ends, 1);
+  assert.equal(h.calls.length, 1);
+});
+
+test("a rejected capture quiz also preserves inventory and resolves the phase", async () => {
+  const h = captureHarness();
+  h.phase.start(); await h.fail();
+  assert.equal(h.stats.errors, 1);
+  assert.equal(h.scene.pokeballCounts[0], 5);
+  assert.equal(h.stats.throws, 0);
+  assert.equal(h.stats.ends, 1);
+});
+
+test("a target gone before or during the capture check consumes no ball", async () => {
+  const gone = captureHarness();
+  gone.target.hp = 0; gone.phase.start();
+  assert.equal(gone.calls.length, 0);
+  assert.equal(gone.stats.ends, 1);
+  assert.equal(gone.scene.pokeballCounts[0], 5);
+  const during = captureHarness();
+  during.phase.start(); during.target.hp = 0; await during.settle(true);
+  assert.equal(during.stats.ends, 1);
+  assert.equal(during.scene.pokeballCounts[0], 5);
+});
+
+test("battle snapshot uses real loaded atlas icons, native HP and up to six party slots", () => {
+  const contextSource = stripTypeScriptTypes(fs.readFileSync(path.join(__dirname, "battle-context.ts"), "utf8"), { mode: "strip" })
+    .replace(/^import[^\n]+\r?\n/m, "").replace("export function readQuizBattleContext", "function readQuizBattleContext");
+  let images = 0;
+  const pokemon = (id, active, hp = 10) => ({
+    id, hp, name: "Fallback", getNameToRender: () => `Pokémon ${id}`,
+    getMaxHp: () => 20, isActive: onField => active && onField,
+    getIconAtlasKey: () => "pokemon-icons", getIconId: () => `icon-${id}`,
+  });
+  const scene = {
+    getPlayerParty: () => Array.from({ length: 7 }, (_, i) => pokemon(i, i === 0)),
+    getEnemyParty: () => [pokemon(99, true, 5)],
+    textures: {
+      exists: () => true, get: () => ({ has: () => true }),
+      getBase64: (key, frame) => { images++; return `data:image/png;base64,${key}-${frame}`; },
+    },
+  };
+  const context = { globalScene: scene, console: { debug() {}, warn() {} } };
+  vm.createContext(context);
+  vm.runInContext(contextSource + "\nglobalThis.readBattle = readQuizBattleContext;", context);
+  const first = context.readBattle();
+  assert.equal(first.player.length, 6);
+  assert.equal(first.enemy.length, 1);
+  assert.equal(first.player[0].name, "Pokémon 0");
+  assert.equal(first.player[0].active, true);
+  assert.equal(first.player[1].active, false);
+  assert.equal(first.enemy[0].hp, 5);
+  assert.equal(first.enemy[0].maxHp, 20);
+  assert.match(first.enemy[0].icon, /^data:image\/png/);
+  context.readBattle();
+  assert.equal(images, 7, "Loaded atlas frames are cached between quiz snapshots");
+  scene.textures.exists = () => false;
+  scene.getEnemyParty = () => [pokemon(100, true)];
+  assert.equal(context.readBattle().enemy[0].icon, undefined);
+  scene.getPlayerParty = () => { throw Error("Expected unavailable scene"); };
+  const fallback = context.readBattle();
+  assert.equal(fallback.player.length, 0);
+  assert.equal(fallback.enemy.length, 0);
 });

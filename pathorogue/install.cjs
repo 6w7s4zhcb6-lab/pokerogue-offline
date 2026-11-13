@@ -4,15 +4,25 @@ const fs=require("node:fs"), path=require("node:path");
 const root=path.resolve(process.argv[2]||"pokerogue-src");
 const file=path.join(root,"src/phases/move-effect-phase.ts");
 const mainFile=path.join(root,"src/main.ts");
+const captureFile=path.join(root,"src/phases/attempt-capture-phase.ts");
 const md=path.join(root,"src/mods");
 const marker="PATHOROGUE_SUBSECTION_GATE_V1";
 function assert(b,msg){if(!b)throw new Error("PathoRogue install: "+msg)}
 assert(fs.existsSync(file),"Original move-effect-phase.ts missing at "+file);
 assert(fs.existsSync(mainFile),"Original main.ts missing at "+mainFile);
+assert(fs.existsSync(captureFile),"Original attempt-capture-phase.ts missing at "+captureFile);
 let s=fs.readFileSync(file,"utf8");
 let main=fs.readFileSync(mainFile,"utf8");
+let capture=fs.readFileSync(captureFile,"utf8");
 assert(!s.includes(marker),"Already patched");
 assert(!main.includes("PATHOROGUE_UI_BOOT"),"UI already patched");
+assert(!capture.includes("PATHOROGUE_CAPTURE_GATE"),"Capture already patched");
+const captureAnchors={
+  class:'  public readonly phaseName = "AttemptCapturePhase";',
+  start:'  start() {',
+  imp:'import { globalScene } from "#app/global-scene";',
+};
+for(const [k,v] of Object.entries(captureAnchors))assert(capture.split(v).length===2,"Missing or duplicated capture "+k+" source anchor");
 assert(main.split("async function startGame(): Promise<void> {").length===2,"Missing or duplicated game startup anchor");
 assert(/^import "#app\/polyfills";[^\r\n]*\r?\n/.test(main),"Expected polyfills as the first startup import");
 const anchors={
@@ -37,7 +47,7 @@ s=s.replace(anchors.start,[
 '        this.pathoGateOpened = true;',
 '        this.pathoGatePending = true;',
 '        this.pathoGateMode = pathoUser.isPlayer() ? "attack" : "defense";',
-'        void openNursingGate(this.pathoGateMode).then(passed => {',
+'        void openNursingGate(this.pathoGateMode, readQuizBattleContext()).then(passed => {',
 '          this.pathoGatePassed = passed;',
 '          this.pathoGatePending = false;',
 '          this.start();',
@@ -70,10 +80,35 @@ s=s.replace(anchors.accuracy,[
 '    }',
 '    const moveAccuracy = move.calculateBattleAccuracy(user, target);'
 ].join("\n"));
-s=s.replace(anchors.imp,anchors.imp+'\nimport { openNursingGate } from "../mods/nursing-gate";');
+s=s.replace(anchors.imp,anchors.imp+'\nimport { openNursingGate } from "../mods/nursing-gate";\nimport { readQuizBattleContext } from "../mods/battle-context";');
+capture=capture.replace(captureAnchors.imp,captureAnchors.imp+'\nimport { openNursingGate } from "../mods/nursing-gate";\nimport { readQuizBattleContext } from "../mods/battle-context";');
+capture=capture.replace(captureAnchors.class,captureAnchors.class+'\n  // PATHOROGUE_CAPTURE_GATE\n  private pathoCaptureStarted = false;');
+capture=capture.replace(captureAnchors.start,[
+'  start() {',
+'    // Validate before native inventory, animations or catch RNG are touched.',
+'    if (this.pathoCaptureStarted) return;',
+'    this.pathoCaptureStarted = true;',
+'    if (!this.getPokemon()?.hp) { this.pathoContinueCapture(); return; }',
+'    void openNursingGate("capture", readQuizBattleContext()).then(passed => {',
+'      if (passed) this.pathoContinueCapture();',
+'      else this.pathoCancelCapture();',
+'    }, error => {',
+'      console.error("PathoRogue capture quiz error; cancelling throw:", error);',
+'      this.pathoCancelCapture();',
+'    });',
+'  }',
+'',
+'  private pathoCancelCapture(): void {',
+'    super.start();',
+'    globalScene.phaseManager.queueMessage("Capture check failed. No Poké Ball was used.");',
+'    this.end();',
+'  }',
+'',
+'  private pathoContinueCapture(): void {'
+].join("\n"));
 main=main.replace(/^(import "#app\/polyfills";[^\r\n]*\r?\n)/, '$1import { initNursingUI } from "./mods/nursing-gate"; // PATHOROGUE_UI_BOOT\n');
 main=main.replace("async function startGame(): Promise<void> {", "async function startGame(): Promise<void> {\n  initNursingUI();");
-const modFiles=["nursing-gate.ts","nursing-content.ts","quiz-effects.ts","quiz-ball.png","quiz-stars.png"];
+const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
 for(const name of modFiles){
   const source=path.join(__dirname,name);
   assert(fs.existsSync(source)&&fs.statSync(source).isFile()&&fs.statSync(source).size>0,"Missing or empty "+name);
@@ -83,4 +118,5 @@ fs.mkdirSync(md,{recursive:true});
 for(const name of modFiles)fs.copyFileSync(path.join(__dirname,name),path.join(md,name));
 fs.writeFileSync(file,s);
 fs.writeFileSync(mainFile,main);
+fs.writeFileSync(captureFile,capture);
 console.log("PathoRogue question gate patched into original PokéRogue.");

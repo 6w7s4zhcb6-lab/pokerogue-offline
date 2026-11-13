@@ -13,18 +13,25 @@ function loadQuiz() {
     console,
     window: { localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) } },
     createQuizEffects: () => ({ showQuestion() {}, answer() {}, settled() {}, dispose() {} }),
+    createQuizBattleHUD: () => ({ dispose() {} }),
   });
   const bank = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-content.ts'), 'utf8'))
     .replace('export const nursingFacts', 'const nursingFacts');
+  const rationales = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'question-rationales.ts'), 'utf8'))
+    .replace(/^import .*nursing-content.*;\r?\n/m, '').replace(/export /g, '');
   const quiz = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-gate.ts'), 'utf8'))
     .replace(/^import .*nursing-content.*;\r?\n/m, '')
     .replace(/^import .*quiz-effects.*;\r?\n/m, '')
+    .replace(/^import .*quiz-battle-hud.*;\r?\n/m, '')
+    .replace(/^import .*question-rationales.*;\r?\n/m, '')
     .replace(/export /g, '');
-  vm.runInContext(bank + '\n' + quiz + `\nthis.quiz = {
+  vm.runInContext(bank + '\n' + rationales + '\n' + quiz + `\nthis.quiz = {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
     normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
+    explainOptions, explainRationaleOptions, renderAnswerFeedback,
+    keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
       hud = { querySelectorAll: () => [], querySelector: () => null, innerHTML: '' };
       this.document = {
@@ -145,8 +152,8 @@ test('difficulty climbs on ten correct answers, drops on three misses and stays 
   assert.equal(quiz.state().banks.patho.tier, 0);
 });
 
-test('attack needs three correct, defense two, and one miss stops either check', async () => {
-  for (const [mode, required] of [['attack', 3], ['defense', 2]]) {
+test('attack and capture need three correct, defense two, and one miss stops each check', async () => {
+  for (const [mode, required] of [['attack', 3], ['defense', 2], ['capture', 3]]) {
     const quiz = loadQuiz();
     const result = await quiz.runGate(mode, Array(required).fill(true));
     assert.equal(result.passed, true);
@@ -172,4 +179,82 @@ test('answer totals and per-subsection progress survive offline storage round-tr
   assert.equal(restored.banks.patho.items[fact.id].attempts, 2);
   assert.equal(restored.banks.patho.items[fact.id].correct, 1);
   assert.equal(restored.banks.patho.items[fact.id].misses, 1);
+});
+
+test('every answer and distractor in all 687 facts has a supported option-specific explanation', () => {
+  const quiz = loadQuiz();
+  const missing = [];
+  let checked = 0;
+  for (const fact of quiz.facts) {
+    const options = [...new Set([fact.answer, ...fact.foils, ...fact.close, ...(fact.expert?.close || [])])];
+    for (const item of quiz.explainOptions(fact, options, [fact.answer], fact.why)) {
+      checked++;
+      if (item.coverage === 'unmapped') missing.push(`${fact.id}: ${item.option}`);
+      assert.ok(item.explanation.length >= 32, `${fact.id}: explanation too short`);
+      assert.ok(item.source.length > 0, `${fact.id}: source missing`);
+      assert.equal(item.correct, item.option === fact.answer);
+    }
+    if (fact.sata) {
+      const all = [...fact.sata.right, ...fact.sata.wrong];
+      const explanations = quiz.explainOptions(fact, all, fact.sata.right, fact.sata.why);
+      assert.equal(explanations.length, all.length);
+      for (const item of explanations) {
+        checked++;
+        if (item.coverage === 'unmapped') missing.push(`${fact.id} SATA: ${item.option}`);
+        assert.equal(item.correct, fact.sata.right.includes(item.option));
+      }
+      const right = explanations.filter(item => item.correct);
+      assert.equal(new Set(right.map(item => item.explanation)).size, fact.sata.right.length, `${fact.id}: SATA components need distinct explanations`);
+    }
+    quiz.state().banks.patho.tier = 9;
+    const q = quiz.makeQuestion(fact, false);
+    const rationaleChoices = quiz.explainRationaleOptions(fact, q.rationaleOptions, q.rationale);
+    assert.equal(rationaleChoices.length, q.rationaleOptions.length);
+    assert.equal(rationaleChoices.filter(item => item.correct).length, 1);
+    assert(rationaleChoices.every(item => item.coverage !== 'unmapped'));
+  }
+  assert.ok(checked > 8000);
+  assert.deepEqual(missing, []);
+});
+
+test('correct feedback keeps all rationales collapsed, wrong feedback automatically shows each option', () => {
+  const quiz = loadQuiz();
+  const q = quiz.makeQuestion(quiz.facts[0], false);
+  const correct = quiz.renderAnswerFeedback(q, true, 1, 3, 'capture');
+  assert(correct.includes('id="ng-reveal-rationales"'));
+  assert(correct.includes('id="ng-option-rationales" hidden'));
+  assert(correct.includes('aria-expanded="false"'));
+  assert.equal((correct.match(/class="ng-option-rationale"/g) || []).length, q.options.length);
+  const wrong = quiz.renderAnswerFeedback(q, false, 1, 3, 'capture');
+  assert(!wrong.includes('id="ng-option-rationales" hidden'));
+  assert(wrong.includes('aria-expanded="true"'));
+  assert(wrong.includes('Your ball is kept'));
+  assert.equal((wrong.match(/class="ng-option-rationale"/g) || []).length, q.options.length);
+  const expert = { ...quiz.facts[0], expert: { answer: 'Verified expert interpretation', why: 'The expert variant has its own supplied clinical explanation.', cue: 'Expert findings.', task: 'Choose the interpretation.' } };
+  quiz.state().banks.patho.tier = 5;
+  const advanced = quiz.makeQuestion(expert, false);
+  const explanations = quiz.explainOptions(expert, advanced.options, advanced.answers, advanced.rationale);
+  assert.equal(explanations.find(item => item.correct).explanation, expert.expert.why);
+});
+
+test('keyboard reveal toggles with Enter/Space, Tab stays in the modal and ordinary Enter continues', () => {
+  const quiz = loadQuiz(), clicks = { reveal: 0, continue: 0, answer: 0 }, doc = {};
+  const button = (id, action) => ({ id, hidden: false, closest: () => null, getClientRects: () => [{}], focus() { doc.activeElement = this; }, click: action });
+  const reveal = button('ng-reveal-rationales', () => clicks.reveal++);
+  const proceed = button('ng-continue', () => clicks.continue++);
+  const answer = button('answer', () => clicks.answer++);
+  const dialog = { querySelectorAll: () => [reveal, proceed], querySelector: selector => selector.includes('#ng-continue') ? proceed : selector.includes('data-answer="1"') ? answer : null };
+  const press = (key, shiftKey = false) => {
+    const event = { type: 'keydown', key, shiftKey, repeat: false, target: doc.activeElement, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+    quiz.keyboard(event, dialog, doc); assert(event.prevented && event.stopped);
+  };
+  doc.activeElement = reveal;
+  press('Enter'); press(' ');
+  assert.equal(clicks.reveal, 2); assert.equal(clicks.continue, 0);
+  press('Tab'); assert.equal(doc.activeElement, proceed);
+  press('Enter'); assert.equal(clicks.continue, 1);
+  press('Tab'); assert.equal(doc.activeElement, reveal);
+  press('Tab', true); assert.equal(doc.activeElement, proceed);
+  press('2'); assert.equal(clicks.answer, 1);
 });

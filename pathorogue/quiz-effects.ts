@@ -9,7 +9,7 @@ const SPIN_MS = 850;
 // the next prompt opens in a newly created gate.
 let previousStarHues: number[] = [];
 
-type QuizMode = "attack" | "defense";
+type QuizMode = "attack" | "defense" | "capture";
 type AudioPreferences = { muted: boolean; volume: number };
 type Particle = { x: number; y: number; vx: number; vy: number; angle: number; spin: number; born: number; life: number; size: number };
 
@@ -42,18 +42,20 @@ const CSS = `
 .ng-with-effects .ng-dialog{position:relative;z-index:4;max-height:calc(100dvh - 92px)!important}
 .ng-with-effects{padding-top:58px!important;padding-bottom:24px!important}
 .ng-effects .ng-stars{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;opacity:.72}
-.ng-effects .ng-star{position:absolute;inset:0;mask-repeat:no-repeat;mask-position:center;mask-size:cover;mask-mode:luminance;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center;-webkit-mask-size:cover;transition:background-color .18s ease}
-.ng-effects[data-feedback=wrong] .ng-star{transition:none}
+.ng-effects .ng-star{position:absolute;inset:-14px;mask-repeat:no-repeat;mask-position:center;mask-size:cover;mask-mode:luminance;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center;-webkit-mask-size:cover;transition:background-color .18s ease;animation:ng-star-drift 9s ease-in-out infinite alternate,ng-star-twinkle 3.4s ease-in-out infinite;will-change:transform,opacity;transform-origin:50% 50%;filter:drop-shadow(0 0 9px currentColor)}
+.ng-effects .ng-star:nth-child(2){animation-duration:11s,4.1s;animation-delay:-3s,-1.4s;transform-origin:65% 32%}
+.ng-effects .ng-star:nth-child(3){animation-duration:13s,2.9s;animation-delay:-6s,-.7s;transform-origin:30% 75%}
+.ng-effects .ng-star-sparkle{position:absolute;clip-path:polygon(50% 0,61% 35%,98% 35%,68% 57%,79% 94%,50% 72%,21% 94%,32% 57%,2% 35%,39% 35%);pointer-events:none;animation:ng-sparkle-drift var(--drift-duration,8s) ease-in-out infinite alternate,ng-star-twinkle var(--twinkle-duration,3s) ease-in-out infinite;animation-delay:var(--star-delay,0s);transition:background-color .18s ease;filter:drop-shadow(0 0 6px currentColor);will-change:transform,opacity}
+.ng-effects[data-feedback=wrong] .ng-star,.ng-effects[data-feedback=wrong] .ng-star-sparkle{transition:none}
 .ng-effects .ng-ball{position:fixed;top:calc(50% - 58px);width:116px;height:116px;z-index:5;pointer-events:none;transform-origin:50% 50%;filter:drop-shadow(0 10px 16px #000a);opacity:.85}
 .ng-effects .ng-ball[data-side=player]{left:max(12px,calc((100vw - 660px)/4 - 58px))}
 .ng-effects .ng-ball[data-side=enemy]{right:max(12px,calc((100vw - 660px)/4 - 58px))}
 .ng-effects .ng-ball.is-active{opacity:1;filter:drop-shadow(0 0 12px #b2f7ff66) drop-shadow(0 10px 16px #000a)}
 .ng-effects .ng-ball-crop{position:absolute;inset:0;overflow:hidden;border-radius:50%;animation:ng-quiz-wiggle 3.6s ease-in-out infinite;transform-origin:50% 70%}
-.ng-effects .ng-ball[data-side=enemy] .ng-ball-crop{animation-delay:-1.8s}
 .ng-effects .ng-ball img{position:absolute;width:211%;height:auto;max-width:none;left:-55%;top:-29%;user-select:none;-webkit-user-drag:none}
 .ng-effects .ng-ball.is-bouncing{animation:ng-quiz-bounce .42s ease-out both}
 .ng-effects .ng-ball.is-spinning{animation:ng-quiz-spin .85s cubic-bezier(.2,.7,.25,1) both}
-.ng-effects .ng-ball.is-bouncing .ng-ball-crop,.ng-effects .ng-ball.is-spinning .ng-ball-crop{animation-play-state:paused}
+.ng-effects .ng-ball.is-bouncing .ng-ball-crop,.ng-effects .ng-ball.is-spinning .ng-ball-crop{animation:none}
 .ng-effects .ng-confetti{position:fixed;inset:0;z-index:6;pointer-events:none;overflow:hidden}
 .ng-effects .ng-confetti canvas{width:100%;height:100%;display:block}
 .ng-effects .ng-effects-controls{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:8;display:flex;align-items:center;gap:9px;padding:5px 9px;border-radius:999px;background:#102039ed;border:1px solid #5d879e;color:#eaf6ff;font:12px system-ui,sans-serif;pointer-events:auto;box-shadow:0 3px 16px #0007}
@@ -64,6 +66,9 @@ const CSS = `
 @keyframes ng-quiz-wiggle{0%,100%{transform:rotate(-2.5deg) translateY(0)}50%{transform:rotate(2.5deg) translateY(-2px)}}
 @keyframes ng-quiz-bounce{0%,100%{transform:translateY(0) scale(1)}38%{transform:translateY(-34px) scale(1.04)}66%{transform:translateY(0) scale(1.07,.92)}84%{transform:translateY(-10px) scale(.98,1.02)}}
 @keyframes ng-quiz-spin{0%{transform:rotate(0deg) scale(1)}45%{transform:rotate(370deg) scale(1.13)}100%{transform:rotate(720deg) scale(1)}}
+@keyframes ng-star-drift{0%{transform:translate3d(-8px,10px,0) scale(.985) rotate(-1deg)}50%{transform:translate3d(5px,-7px,0) scale(1.025) rotate(.7deg)}100%{transform:translate3d(11px,-15px,0) scale(1.045) rotate(1.5deg)}}
+@keyframes ng-sparkle-drift{0%{transform:translate3d(-5px,8px,0) scale(.65) rotate(-12deg)}50%{transform:translate3d(5px,-3px,0) scale(1.05) rotate(5deg)}100%{transform:translate3d(-2px,-20px,0) scale(.82) rotate(18deg)}}
+@keyframes ng-star-twinkle{0%,100%{opacity:.3;filter:brightness(.85) drop-shadow(0 0 3px currentColor)}35%{opacity:1;filter:brightness(1.45) drop-shadow(0 0 12px currentColor)}65%{opacity:.55;filter:brightness(1.05) drop-shadow(0 0 6px currentColor)}}
 @media(max-width:940px){
  .ng-effects .ng-ball{width:46px;height:46px;top:12px}
  .ng-effects .ng-ball[data-side=player]{left:10px}
@@ -75,15 +80,15 @@ const CSS = `
  .ng-with-effects .ng-dialog{max-height:calc(100dvh - 98px)!important}
 }
 @media(prefers-reduced-motion:reduce){
- .ng-effects .ng-ball-crop,.ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning{animation:none!important}
- .ng-effects .ng-star{transition:none}
+ .ng-effects .ng-ball-crop,.ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning,.ng-effects .ng-star,.ng-effects .ng-star-sparkle{animation:none!important}
+ .ng-effects .ng-star,.ng-effects .ng-star-sparkle{transition:none;opacity:.65;will-change:auto}
  .ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning{filter:drop-shadow(0 0 12px #a6ffe0)}
 }
 `;
 
 export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptIds: readonly string[] = []) {
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-  const activeSide = mode === "attack" ? "player" : "enemy";
+  const activeSide = mode === "defense" ? "enemy" : "player";
   const preferences = audioPreferences();
   const colors = new Map<string, string>();
   const sortedIds = [...new Set(conceptIds)].sort();
@@ -94,6 +99,9 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
   const root = document.createElement("div");
   root.className = "ng-effects";
   root.dataset.activeSide = activeSide;
+  root.dataset.mode = mode;
+  root.dataset.synchronizedBalls = "true";
+  root.dataset.starMotion = reducedMotion ? "reduced" : "drift-twinkle";
   root.dataset.feedback = "question";
   root.dataset.promptCount = "0";
   root.dataset.correctCount = "0";
@@ -118,6 +126,24 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     stars.appendChild(layer);
     return layer;
   });
+  // Small stars add depth to the original three-star image without requiring
+  // an animated source asset. All are part of the same three question colors.
+  const sparkles = Array.from({ length: 18 }, (_, index) => {
+    const sparkle = document.createElement("span");
+    const size = [6, 10, 16, 8, 20, 12][index % 6];
+    sparkle.className = "ng-star-sparkle";
+    sparkle.dataset.starGroup = String(index % 3);
+    sparkle.style.width = `${size}px`;
+    sparkle.style.height = `${size}px`;
+    sparkle.style.left = `${4 + (index * 37) % 92}%`;
+    sparkle.style.top = `${5 + (index * 23) % 90}%`;
+    sparkle.style.setProperty("--drift-duration", `${7 + index % 7}s`);
+    sparkle.style.setProperty("--twinkle-duration", `${2.2 + (index % 5) * 0.45}s`);
+    sparkle.style.setProperty("--star-delay", `${-index * 0.37}s`);
+    stars.appendChild(sparkle);
+    return sparkle;
+  });
+  root.dataset.starSparkleCount = String(sparkles.length);
   root.appendChild(stars);
 
   const balls = (["player", "enemy"] as const).map(side => {
@@ -136,7 +162,8 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     root.appendChild(ball);
     return ball;
   });
-  const activeBall = balls[mode === "attack" ? 0 : 1];
+  const activeBall = balls[mode === "defense" ? 1 : 0];
+  const ballCrops = balls.map(ball => ball.firstElementChild as HTMLElement);
 
   const controls = document.createElement("div");
   controls.className = "ng-effects-controls";
@@ -180,6 +207,41 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     const timer = setTimeout(() => { timers.delete(timer); if (!disposed) fn(); }, ms);
     timers.add(timer);
     return timer;
+  };
+  let motionSequence = 0;
+  let idleEpoch = 0;
+  const setMotionPhase = (phase: "idle" | "bounce" | "spin") => {
+    const sequence = String(++motionSequence);
+    const at = String(performance.now());
+    for (const ball of balls) {
+      ball.classList.remove("is-idle", "is-bouncing", "is-spinning");
+      ball.dataset.motionPhase = phase;
+      ball.dataset.motionSequence = sequence;
+      ball.dataset.motionStartedAt = at;
+    }
+    // Flush the removal once for both balls, so repeated correct answers also
+    // restart one shared CSS timeline rather than retaining an old animation.
+    void root.offsetWidth;
+    for (const ball of balls) ball.classList.add(phase === "idle" ? "is-idle" : phase === "bounce" ? "is-bouncing" : "is-spinning");
+    void root.offsetWidth;
+    const sharedStart = document.timeline?.currentTime;
+    const name = phase === "idle" ? "ng-quiz-wiggle" : phase === "bounce" ? "ng-quiz-bounce" : "ng-quiz-spin";
+    for (const node of phase === "idle" ? ballCrops : balls) {
+      for (const animation of node.getAnimations?.() || []) {
+        if ((animation as CSSAnimation).animationName !== name) continue;
+        animation.currentTime = 0;
+        if (typeof sharedStart === "number") animation.startTime = sharedStart;
+      }
+    }
+    root.dataset.motionPhase = phase;
+    root.dataset.motionSequence = sequence;
+    root.dataset.motionStartedAt = at;
+    root.dataset.motionTimelineStart = String(sharedStart ?? "unavailable");
+    if (phase === "idle") {
+      const epoch = String(++idleEpoch);
+      root.dataset.idleEpoch = epoch;
+      for (const ball of balls) ball.dataset.idleEpoch = epoch;
+    }
   };
   const savePreferences = () => {
     try { localStorage.setItem(AUDIO_KEY, JSON.stringify(preferences)); } catch { /* Best effort offline preference. */ }
@@ -250,7 +312,9 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
   updateAudioControls();
 
   const tintStars = (palette: string[]) => {
-    starLayers.forEach((layer, index) => { layer.style.backgroundColor = palette[index]; layer.dataset.color = palette[index]; });
+    const tint = (layer: HTMLElement, color: string) => { layer.style.backgroundColor = color; layer.style.color = color; layer.dataset.color = color; };
+    starLayers.forEach((layer, index) => tint(layer, palette[index]));
+    sparkles.forEach(sparkle => tint(sparkle, palette[Number(sparkle.dataset.starGroup)]));
     root.dataset.starPalette = palette.join("|");
   };
   const colorFor = (id: string) => {
@@ -321,6 +385,7 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     lastFinish = Math.max(lastFinish, born + life);
   };
 
+  setMotionPhase("idle");
   return {
     showQuestion(conceptId: string) {
       if (disposed) return;
@@ -356,7 +421,7 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
       playSound(correct);
       if (!correct) {
         ++animationSerial;
-        activeBall.classList.remove("is-bouncing", "is-spinning");
+        setMotionPhase("idle");
         resolveAnimation?.(); resolveAnimation = null;
         bursts.forEach(burst => { cancelAnimationFrame(burst.raf); burst.wrapper.remove(); });
         bursts.clear();
@@ -370,21 +435,18 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
       animationDone = new Promise<void>(resolve => { resolveAnimation = resolve; });
       const finishAnimation = () => {
         if (animationSerial !== token) return;
+        setMotionPhase("idle");
         resolveAnimation?.(); resolveAnimation = null;
       };
       const bounce = reducedMotion ? 60 : BOUNCE_MS;
       const spin = reducedMotion ? 60 : SPIN_MS;
-      activeBall.classList.remove("is-bouncing", "is-spinning");
-      void activeBall.offsetWidth;
-      activeBall.classList.add("is-bouncing");
+      setMotionPhase("bounce");
       schedule(() => {
         if (animationSerial !== token) return;
-        activeBall.classList.remove("is-bouncing");
         if (complete) {
-          activeBall.classList.add("is-spinning");
+          setMotionPhase("spin");
           schedule(() => {
             if (animationSerial !== token) return;
-            activeBall.classList.remove("is-spinning");
             finishAnimation();
           }, spin);
         } else finishAnimation();

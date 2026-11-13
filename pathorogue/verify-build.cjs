@@ -42,7 +42,7 @@ function verifyDist(root) {
   }
   walk(root);
   const built = scripts.join("\n");
-  for (const text of ["ng-hud", "ng-overlay", "MASTERY TRACKER", "Rationale:", "SCHEDULED MASTERY REVIEW", "pokerogue.pathophysiology-gate.v3"]) {
+  for (const text of ["ng-hud", "ng-overlay", "ng-battle-hud", "ng-option-rationales", "ng-star-twinkle", "MASTERY TRACKER", "Rationale:", "SCHEDULED MASTERY REVIEW", "pokerogue.pathophysiology-gate.v3"]) {
     assert(built.includes(text), `PathoRogue runtime missing from compiled output: ${text}`);
   }
   return { entry: manifest.js, javascriptChunks: scripts.length, pathophysiologyRuntimePresent: true };
@@ -164,6 +164,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
     }
     assert(hud?.includes("Patho Quiz"), "Downloaded EXE never initialized Pathophysiology HUD");
     assert.equal(await evaluate(session.cdp, "document.querySelectorAll('.ng-effects').length"), 0, "Quiz graphics appeared outside a quiz overlay");
+    assert.equal(await evaluate(session.cdp, "document.querySelectorAll('.ng-battle-hud').length"), 0, "Quiz battle HUD appeared outside a quiz overlay");
     const url = await evaluate(session.cdp, "location.href");
     assert(url.startsWith("file://"), `Game must load packaged files offline: ${url}`);
     await evaluate(session.cdp, "document.querySelector('#ng-toggle').click()");

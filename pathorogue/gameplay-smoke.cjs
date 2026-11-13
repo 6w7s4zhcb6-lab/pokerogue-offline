@@ -81,6 +81,7 @@ async function snapshot(cdp, scene) {
       starterCursor:h?.cursor,partySelected:h?.partyStarterIds?.length,
       gridCursorVisible:h?.cursorObj?.visible,filterVisible:h?.filterMode,
       player:(this.getPlayerParty?.()||[]).map(pokemon),enemy:(this.getEnemyParty?.()||[]).map(pokemon),
+      pokeballs:{...this.pokeballCounts},
       turn:this.currentBattle?.turn,wave:this.currentBattle?.waveIndex,
       pathoMode:p?.pathoGateMode,pathoPassed:p?.pathoGatePassed,
       user:user?pokemon(user):null,targets:targets.map(pokemon),texts:texts.slice(-30),
@@ -136,9 +137,38 @@ async function readEffects(cdp) {
   return evaluate(cdp, `(()=>{
     const root=document.querySelector('#ng-overlay .ng-effects');if(!root)return null;
     const stars=[...root.querySelectorAll('.ng-star')].map(s=>({color:s.dataset.color||getComputedStyle(s).getPropertyValue('--star-color').trim()||getComputedStyle(s).color,fill:getComputedStyle(s).fill,background:getComputedStyle(s).backgroundColor}));
-    const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState}))}));
-    return {dataset:{...root.dataset},stars,balls,confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept})),pointerEvents:getComputedStyle(root).pointerEvents};
+    const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState,startTime:a.startTime,currentTime:a.currentTime}))}));
+    return {dataset:{...root.dataset},stars,balls,sparkles:[...root.querySelectorAll('.ng-star-sparkle')].map(s=>({animation:getComputedStyle(s).animationName,transform:getComputedStyle(s).transform,opacity:getComputedStyle(s).opacity})),confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept})),pointerEvents:getComputedStyle(root).pointerEvents};
   })()`);
+}
+
+async function checkBattleHUD(cdp, state) {
+  const hud = await evaluate(cdp, `(async()=>{
+    const root=document.querySelector('#ng-overlay .ng-battle-hud');if(!root)return null;
+    await Promise.all([...root.querySelectorAll('img')].map(i=>i.decode().catch(()=>{})));
+    return {current:[...root.querySelectorAll('.ng-current')].map(e=>({side:e.dataset.side,id:e.dataset.pokemonId,hp:Number(e.dataset.hp),maxHp:Number(e.dataset.maxHp)})),
+      parties:[...root.querySelectorAll('.ng-party')].map(e=>({side:e.dataset.side,slots:[...e.querySelectorAll('.ng-party-slot')].map(s=>({id:s.dataset.pokemonId,hp:Number(s.dataset.hp),fainted:s.classList.contains('is-fainted'),empty:s.classList.contains('is-empty')}))})),
+      icons:[...root.querySelectorAll('img')].map(i=>({complete:i.complete,width:i.naturalWidth}))};
+  })()`);
+  assert(hud, 'Quiz is missing battle health and party displays');
+  for (const side of ['player', 'enemy']) {
+    const party = state[side];
+    const active = hud.current.find(p => p.side === side);
+    const actual = party.find(p => String(p.id) === active.id);
+    assert(actual, `${side} current Pokémon is not in the battle party`);
+    assert.equal(active.hp, actual.hp, `${side} displayed HP differs from battle`);
+    assert.equal(active.maxHp, actual.maxHp, `${side} displayed maximum HP differs from battle`);
+    const slots = hud.parties.find(p => p.side === side).slots;
+    assert.equal(slots.length, 6, `${side} must display six party slots`);
+    party.slice(0, 6).forEach((p, index) => {
+      assert.equal(slots[index].id, String(p.id));
+      assert.equal(slots[index].hp, p.hp);
+      assert.equal(slots[index].fainted, p.hp === 0);
+    });
+    assert(slots.slice(party.length).every(s => s.empty), 'Unused party slots must remain empty');
+  }
+  assert(hud.icons.length >= 4 && hud.icons.every(i => i.complete && i.width > 0), 'Offline Pokémon icons failed to load');
+  return hud;
 }
 
 async function checkLayout(cdp, reportDir, width, height) {
@@ -147,21 +177,40 @@ async function checkLayout(cdp, reportDir, width, height) {
   const layout = await evaluate(cdp, `(()=>{
     const overlay=document.querySelector('#ng-overlay'),dialog=overlay.querySelector('.ng-dialog');
     const rect=dialog.getBoundingClientRect(),buttons=[...dialog.querySelectorAll('button[data-answer]')];
-    return {width:innerWidth,height:innerHeight,dialog:{left:rect.left,right:rect.right,width:rect.width},horizontalOverflow:overlay.scrollWidth-overlay.clientWidth,
+    const originalScroll=dialog.scrollTop;
+    const initialButtons=buttons.map(b=>{const r=b.getBoundingClientRect(),top=Math.max(r.top,rect.top),bottom=Math.min(r.bottom,rect.bottom);return {left:r.left,right:r.right,font:parseFloat(getComputedStyle(b).fontSize),visible:bottom>top,uncovered:bottom>top?document.elementFromPoint(r.left+r.width/2,(top+bottom)/2)?.closest('button')===b:true};});
+    const reachable=buttons.map(b=>{b.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const r=b.getBoundingClientRect();return r.top>=rect.top&&r.bottom<=rect.bottom&&document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('button')===b;});
+    dialog.scrollTop=originalScroll;
+    return {width:innerWidth,height:innerHeight,dialog:{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:rect.width},horizontalOverflow:overlay.scrollWidth-overlay.clientWidth,
+      decorations:[...overlay.querySelectorAll('.ng-current,.ng-party,.ng-effects-controls')].map(e=>{const r=e.getBoundingClientRect();return {kind:e.className,left:r.left,right:r.right,top:r.top,bottom:r.bottom};}),
       headingFont:parseFloat(getComputedStyle(dialog.querySelector('h2')).fontSize),
-      buttons:buttons.map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,font:parseFloat(getComputedStyle(b).fontSize),visible:r.bottom>0&&r.top<innerHeight,uncovered:r.top>=0&&r.bottom<innerHeight?document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('button')===b:true};})};
+      buttons:initialButtons.map((b,i)=>({...b,reachable:reachable[i]}))};
   })()`);
   assert(layout.dialog.left >= 0 && layout.dialog.right <= width + 1, `Quiz dialog exceeds ${width}px viewport`);
   assert(layout.horizontalOverflow <= 1, `Quiz requires horizontal scrolling at ${width}px`);
   assert(layout.headingFont >= 18, 'Quiz heading became too small to read');
-  assert(layout.buttons.every(b => b.left >= 0 && b.right <= width + 1 && b.font >= 12 && b.uncovered), 'Quiz graphics cover answer controls or answer text exceeds viewport');
+  assert(layout.buttons.every(b => b.left >= 0 && b.right <= width + 1 && b.font >= 12 && b.uncovered && b.reachable), 'Quiz graphics cover answer controls or answer text exceeds viewport');
   assert(layout.buttons.some(b => b.visible), 'No answer control visible on initial prompt');
+  for (const box of layout.decorations) {
+    const overlapWidth = Math.min(box.right, layout.dialog.right) - Math.max(box.left, layout.dialog.left);
+    const overlapHeight = Math.min(box.bottom, layout.dialog.bottom) - Math.max(box.top, layout.dialog.top);
+    assert(overlapWidth <= 1 || overlapHeight <= 1, `${box.kind} visually overlaps the quiz at ${width}px`);
+    assert(box.left >= 0 && box.right <= width && box.top >= 0 && box.bottom <= height, `${box.kind} exceeds the quiz viewport`);
+  }
   await capture(cdp, reportDir, `quiz-effects-${width}-layout.png`);
   return layout;
 }
 
 function activeBall(effects, mode) {
-  return effects.balls.find(b => b.side === (mode === 'attack' ? 'player' : 'enemy'));
+  return effects.balls.find(b => b.side === (mode === 'defense' ? 'enemy' : 'player'));
+}
+
+function assertSynchronized(effects, animationName) {
+  const animations = effects.balls.map(ball => ball.animations.find(a => a.name === animationName && a.state === 'running'));
+  assert(animations.length === 2 && animations.every(Boolean), `Both balls must run ${animationName}`);
+  assert(animations.every(a => typeof a.startTime === 'number' && Number.isFinite(a.startTime) && typeof a.currentTime === 'number' && Number.isFinite(a.currentTime)), `${animationName} has no live animation timeline`);
+  assert(Math.abs(animations[0].startTime - animations[1].startTime) < 1, `${animationName} ball start times differ`);
+  assert(Math.abs(animations[0].currentTime - animations[1].currentTime) < 1, `${animationName} ball phases differ`);
 }
 
 function ballAnimating(ball, name) {
@@ -190,7 +239,7 @@ async function armQuestionProbe(cdp) {
     const effects = () => ({ connected: root.isConnected, dataset: { ...root.dataset },
       stars: [...root.querySelectorAll('.ng-star')].map(s => ({ color: s.dataset.color, background: getComputedStyle(s).backgroundColor })),
       balls: [...root.querySelectorAll('.ng-ball')].map(b => ({ side: b.dataset.side, state: b.dataset.state, classes: b.className,
-        animation: getComputedStyle(b).animationName, animations: b.getAnimations({ subtree: true }).map(a => ({ name: a.animationName, state: a.playState })) })),
+        animation: getComputedStyle(b).animationName, animations: b.getAnimations({ subtree: true }).map(a => ({ name: a.animationName, state: a.playState, startTime: a.startTime, currentTime: a.currentTime })) })),
       confetti: [...root.querySelectorAll('.ng-confetti')].map(c => ({ color: c.dataset.diseaseColor, concept: c.dataset.concept })),
       pointerEvents: getComputedStyle(root).pointerEvents });
     const probe = { events: [], feedback: null, continuedAt: null, advancedAt: null, question, effects,
@@ -303,8 +352,8 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     if (correct) {
       assert(effects.feedback.confetti.length > 0, 'Correct answer did not render confetti');
       assert(effects.feedback.confetti.every(c => c.color === effects.feedback.dataset.diseaseColor && c.concept === question.concept), 'Confetti does not match the current disease color/concept');
-      assert(ballAnimating(activeBall(effects.feedback, question.mode), 'bounce'), 'Correct answer did not bounce the active side');
-      assert(effects.feedback.balls.filter(b => b !== activeBall(effects.feedback, question.mode)).every(b => !ballAnimating(b, 'bounce')), 'Correct answer also bounced the inactive side');
+      assert(effects.feedback.balls.every(b => ballAnimating(b, 'bounce')), 'Correct answer did not bounce both balls');
+      assertSynchronized(effects.feedback, 'ng-quiz-bounce');
     } else {
       assert.equal(effects.feedback.stars.length, 3, 'Wrong feedback lost the three stars');
       assert(effects.feedback.stars.every(s => s.color.toLowerCase() === '#ff425c'), `Wrong feedback stars are not red: ${JSON.stringify(effects.feedback.stars)}`);
@@ -317,6 +366,22 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
       await capture(cdp, effectTest.reportDir, `quiz-effects-${screenshotKey}.png`);
       effectTest.report.effectScreenshots.push(screenshotKey);
     }
+  }
+  if (!finalCorrect) {
+    const rationaleView = await evaluate(cdp, `(()=>{
+      const container=document.querySelector('#ng-option-rationales'),button=document.querySelector('#ng-reveal-rationales');
+      const before=container?getComputedStyle(container).display==='none'||container.hidden:null;
+      if(button&&${correct})button.click();
+      return {before,hasReveal:!!button,visible:!!container&&!container.hidden&&getComputedStyle(container).display!=='none',options:[...(container?.querySelectorAll('.ng-option-rationale')||[])].map(e=>({index:Number(e.dataset.answer),correct:e.dataset.correct,text:e.textContent}))};
+    })()`);
+    assert.equal(rationaleView.options.length, question.options.length, 'Every rendered answer must have an explanation');
+    assert(rationaleView.options.every(e => e.text.length > 55), 'Answer explanation is missing substantive context');
+    assert.equal(rationaleView.visible, true, 'Answer explanations cannot be revealed');
+    if (correct) {
+      assert.equal(rationaleView.before, true, 'Correct-answer explanations must be optional and initially collapsed');
+      assert.equal(rationaleView.hasReveal, true, 'Correct answer lacks Reveal rationales control');
+    } else assert.equal(rationaleView.before, false, 'Wrong-answer explanations should open automatically');
+    if (effectTest) effectTest.report.optionRationalesVerified = true;
   }
   if (!effectTest) await evaluate(cdp, "document.querySelector('#ng-continue').click()");
   else if (!finalCorrect) await evaluate(cdp, 'window.__pathorogueQuestionProbe.continue()');
@@ -344,6 +409,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     if (correct) {
       const bounce = recorded.events.find(e => cssAnimation(e, 'ng-quiz-bounce'));
       assert(bounce, 'Active ball never ran its actual CSS bounce animation');
+      assertSynchronized(bounce.effects, 'ng-quiz-bounce');
       effects.bounce = { observedAt: bounce.at, animation: activeBall(bounce.effects, question.mode).animation,
         animationEvents: recorded.events.filter(e => e.animationName === 'ng-quiz-bounce').map(({kind,at,side}) => ({kind,at,side})) };
     }
@@ -351,11 +417,12 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
       assert.equal(recorded.quickContinueSameTask, true, 'Quick Continue was not dispatched in the grading turn');
       effects.timing.continueDispatchedInGradingTurn = true;
       const spin = recorded.events.find(e => cssAnimation(e, 'ng-quiz-spin'));
-      assert(spin, 'No active-side completion spin was observed before overlay removal');
+      assert(spin, 'No completion spin was observed before overlay removal');
+      assertSynchronized(spin.effects, 'ng-quiz-spin');
       const spinEnd = recorded.events.find(e => e.at > spin.at && !ballAnimating(activeBall(e.effects, question.mode), 'spin'));
       assert(spinEnd, 'Completion spin did not finish before the battle resumed');
       assert(spin.at < spinEnd.at && spinEnd.at <= recorded.advancedAt, 'Battle resumed before the completion spin finished');
-      assert(recorded.events.every(e => e.effects.balls.filter(b => b !== activeBall(e.effects, question.mode)).every(b => !ballAnimating(b, 'spin'))), 'Gate completion also spun the inactive side');
+      assert(spin.effects.balls.every(b => ballAnimating(b, 'spin')), 'Completion must spin both balls');
       effects.completion = { spinStartedAt: spin.at, spinFinishedAt: spinEnd.at, overlayRemovedAt: recorded.advancedAt,
         spinVisibleMs: spinEnd.at - spin.at, snapshot: spin.effects,
         animationEvents: recorded.events.filter(e => e.animationName === 'ng-quiz-spin').map(({kind,at,side}) => ({kind,at,side})) };
@@ -370,7 +437,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   return { concept: fact.conceptId, subsection: fact.subsectionId, level: question.level, review: question.review, rationaleRequired, policy, correct, effects };
 }
 
-async function advanceMenus(cdp, scene, state) {
+async function advanceMenus(cdp, scene, state, { captureAttempt = false } = {}) {
   // Read menu labels, then send ordinary keys to the same handlers as a player.
   if (state.mode === 1) {
     if (!await chooseOption(cdp, scene, /^continue$/i)) await chooseOption(cdp, scene, /^new game$/i);
@@ -386,6 +453,9 @@ async function advanceMenus(cdp, scene, state) {
     // Fight is the first cell in the standard 2x2 battle command menu.
     if (state.cursor === 1 || state.cursor === 3) await key(cdp, "ArrowLeft");
     if (state.cursor === 2 || state.cursor === 3) await key(cdp, "ArrowUp");
+    if (captureAttempt) await key(cdp, "ArrowRight");
+    await key(cdp, "Space");
+  } else if (state.mode === 4) {
     await key(cdp, "Space");
   } else if (state.mode === 3) {
     // The default starter's first move is a damaging basic attack.
@@ -401,7 +471,7 @@ async function capture(cdp, folder, name) {
 }
 
 function settleFailedMoves(report, state) {
-  for (const gate of report.gates.filter(g => g.passed === false && !g.moveOutcome)) {
+  for (const gate of report.gates.filter(g => g.mode !== 'capture' && g.passed === false && !g.moveOutcome)) {
     if (!state.turn || state.turn < gate.before.turn) continue;
     const before = gate.mode === "attack" ? gate.before.enemy : gate.before.player;
     const after = gate.mode === "attack" ? state.enemy : state.player;
@@ -427,7 +497,7 @@ function settleFailedMoves(report, state) {
   }
 }
 
-async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highTier = false, timeout = 240000 } = {}) {
+async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highTier = false, captureTest = false, timeout = 240000 } = {}) {
   const deadline = Date.now() + timeout;
   let active = null;
   let lastStateKey = "";
@@ -445,11 +515,13 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       assert(match, `Quiz counter missing: ${question.kicker}`);
       const number = Number(match[1]);
       const required = Number(match[2]);
-      assert.equal(required, question.mode === "attack" ? 3 : 2);
-      assert.equal(state.phase, "MoveEffectPhase", "Quiz must originate in actual game's battle phase");
+      assert.equal(required, question.mode === "defense" ? 2 : 3);
+      assert.equal(state.phase, question.mode === 'capture' ? 'AttemptCapturePhase' : 'MoveEffectPhase', "Quiz must originate in actual game's battle phase");
       if (number === 1) {
         const already = report.gates.filter(g => g.mode === question.mode && g.highTier === highTier);
         let policy = already.some(g => g.passed) ? "wrong-answer" : "correct";
+        if (captureTest) policy = 'correct';
+        if (question.mode === 'capture') policy = already.some(g => !g.passed) ? 'correct' : 'wrong-answer';
         if (highTier) policy = already.some(g => g.passed) ? "wrong-rationale" : "correct";
         active = { mode: question.mode, highTier, policy, required, before: state, questions: [] };
         report.gates.push(active);
@@ -461,10 +533,21 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       const promptEffects = await readEffects(cdp);
       assert(promptEffects, 'Battle question does not contain quiz effects');
       assert.equal(promptEffects.balls.length, 2, 'Question must show one player ball and one enemy ball');
+      assertSynchronized(promptEffects, 'ng-quiz-wiggle');
       assert.equal(promptEffects.stars.length, 3, 'Question must show three stars');
       const colors = promptEffects.stars.map(s => s.color);
       assert.equal(new Set(colors).size, 3, 'Prompt stars must have three distinct colors');
       assert.equal(promptEffects.pointerEvents, 'none', 'Decorative graphics must not intercept answer input');
+      if (!report.battleHUD) report.battleHUD = await checkBattleHUD(cdp, state);
+      else await checkBattleHUD(cdp, state);
+      if (!report.starMotion) {
+        assert(promptEffects.sparkles.length >= 12, 'Animated star field is absent');
+        assert(promptEffects.sparkles.every(s => s.animation !== 'none'), 'Star sparkle has no animation');
+        await delay(220);
+        const moving = await readEffects(cdp);
+        assert(moving.sparkles.some((s, i) => s.transform !== promptEffects.sparkles[i].transform || s.opacity !== promptEffects.sparkles[i].opacity), 'Stars remain static');
+        report.starMotion = true;
+      }
       const previousPrompt = report.lastPromptStarColors;
       if (previousPrompt) assert(colors.some((color, index) => color !== previousPrompt[index]), 'Star colors did not change for the next prompt');
       report.lastPromptStarColors = colors;
@@ -480,15 +563,22 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
         assert.equal(active.questions.length, active.passed ? required : 1);
         await delay(250);
         active.after = await snapshot(cdp, scene);
+        if (active.mode === 'capture') {
+          const beforeBalls = Object.values(active.before.pokeballs).reduce((a, b) => a + b, 0);
+          const afterBalls = Object.values(active.after.pokeballs).reduce((a, b) => a + b, 0);
+          assert.equal(afterBalls, beforeBalls - (active.passed ? 1 : 0), 'Capture gate used the wrong number of balls');
+          active.moveOutcome = active.passed ? 'Three correct answers released the native throw and consumed one ball' : 'Incorrect answer blocked capture and preserved ball inventory';
+        }
         active = null;
       }
     } else {
-      const visibility = await evaluate(cdp, `({ question: !!document.querySelector('#ng-overlay .ng-dialog'), effects: document.querySelectorAll('.ng-effects').length })`);
+      const visibility = await evaluate(cdp, `({ question: !!document.querySelector('#ng-overlay .ng-dialog'), effects: document.querySelectorAll('.ng-effects').length, hud:document.querySelectorAll('.ng-battle-hud').length })`);
       if (visibility.question) continue; // A new gate can open between CDP reads.
       assert.equal(visibility.effects, 0, 'Quiz effects remain visible during normal gameplay');
+      assert.equal(visibility.hud, 0, 'Battle HUD remains outside the quiz');
       settleFailedMoves(report, state);
       if (predicate(report)) return;
-      await advanceMenus(cdp, scene, state);
+      await advanceMenus(cdp, scene, state, { captureAttempt: captureTest && state.enemy.filter(p => p.hp > 0).length === 1 && !report.gates.some(g => g.mode === 'capture' && g.passed) });
       await delay(300);
     }
   }
@@ -518,6 +608,13 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     report.checks.wrongAnswerFailsGate = true;
     report.checks.failedAttackDealsNoDamage = true;
     report.checks.failedDefenseAllowsEnemyDamage = true;
+    await playUntil(session.cdp, scene, bank, report, reportDir,
+      r => r.gates.some(g => g.mode === 'capture' && g.passed && g.moveOutcome)
+        && r.gates.some(g => g.mode === 'capture' && !g.passed && g.moveOutcome)
+        && r.navigation.at(-1)?.phase !== 'AttemptCapturePhase', { captureTest: true });
+    report.checks.realCaptureThreeCorrect = true;
+    report.checks.failedCapturePreservesBall = true;
+    report.checks.successfulCaptureGateRunsNativeThrow = true;
     const stored = await evaluate(session.cdp, `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}))`);
     assert(stored.totalAnswers > 0 && stored.correctAnswers > 0, "Battle answers were not saved offline");
     // Seed valid imported progress only in the disposable test profile to reach
@@ -542,8 +639,11 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     const signature = events => events.map(({kind,type,frequency}) => `${kind}/${type}/${frequency}`).join('|');
     assert.notEqual(signature(correctSound), signature(wrongSound), 'Correct and wrong sound cues must differ');
     Object.assign(report.checks, { quizEffectsOnlyDuringOverlay: true, threeDistinctChangingStars: true,
-      wrongAnswersTurnStarsRed: true, correctAnswersProduceConfettiAndActiveBounce: true,
+      wrongAnswersTurnStarsRed: true, correctAnswersProduceConfettiAndSynchronizedBounce: true,
       completedGatesSpinBeforeBattleResumes: true, distinctCorrectAndWrongAudio: true,
+      synchronizedBallAnimations: true, movingTwinklingStars: report.starMotion === true,
+      currentHealthAndSixPartySlots: !!report.battleHUD,
+      optionalAllAnswerRationales: report.optionRationalesVerified === true,
       wideAndNarrowQuizLayout: true, quizEffectsCleanedUp: true });
     await capture(session.cdp, reportDir, "gameplay-completed.png");
     report.finalProgress = await evaluate(session.cdp, `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}))`);

@@ -25,6 +25,16 @@ function environment({ reduced = false, gameAudio = null } = {}) {
       };
     }
     appendChild(child) { child.remove(); this.children.push(child); child.parentElement = this; return child; }
+    get firstElementChild() { return this.children[0] || null; }
+    getAnimations() {
+      let name;
+      if (this.classList.contains("ng-ball")) name = this.classList.contains("is-bouncing") ? "ng-quiz-bounce" : this.classList.contains("is-spinning") ? "ng-quiz-spin" : null;
+      if (this.classList.contains("ng-ball-crop") && !this.parentElement.classList.contains("is-bouncing") && !this.parentElement.classList.contains("is-spinning")) name = "ng-quiz-wiggle";
+      if (!name || reduced) return [];
+      this.animations ||= new Map();
+      if (!this.animations.has(name)) this.animations.set(name, { animationName: name, currentTime: null, startTime: null });
+      return [this.animations.get(name)];
+    }
     append(...children) { children.forEach(child => this.appendChild(child)); }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
     setAttribute(key, value) { this.attributes[key] = value; }
@@ -49,7 +59,7 @@ function environment({ reduced = false, gameAudio = null } = {}) {
   const context = vm.createContext({
     console, URL, performance: { now: () => now }, AudioContext: Audio,
     window: { AudioContext: Audio, matchMedia: () => ({ matches: reduced }), devicePixelRatio: 1 },
-    document: { createElement: tag => new Element(tag) },
+    document: { createElement: tag => new Element(tag), timeline: { get currentTime() { return now; } } },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     setTimeout: setTimer, clearTimeout: id => tasks.delete(id),
     requestAnimationFrame: callback => setTimer(() => callback(now), 16), cancelAnimationFrame: id => tasks.delete(id),
@@ -84,11 +94,16 @@ test("three distinct star hues all change per prompt and across overlay instance
   effects.showQuestion("disease-a");
   const first = find(overlay, "ng-star").map(star => star.dataset.color);
   assert.equal(new Set(first).size, 3);
+  const sparkles = find(overlay, "ng-star-sparkle");
+  assert.equal(sparkles.length, 18);
+  assert(new Set(sparkles.map(star => star.style.width)).size > 1, "Star field should contain multiple star sizes");
+  assert(sparkles.every(star => first.includes(star.dataset.color)), "Moving stars must share the current three colors");
   effects.showQuestion("disease-a");
   const second = find(overlay, "ng-star").map(star => star.dataset.color);
   assert(second.every(color => !first.includes(color)));
   effects.answer(false);
   assert(find(overlay, "ng-star").every(star => star.dataset.color === "#ff425c"));
+  assert(sparkles.every(star => star.dataset.color === "#ff425c"), "Wrong answers must also tint every moving sparkle red");
   effects.dispose();
   const nextOverlay = env.overlay(), next = env.create(nextOverlay, "defense", ["disease-a"]);
   next.showQuestion("disease-a");
@@ -116,21 +131,52 @@ test("all 96 disease colors are distinct and stable; every correct response emit
   effects.dispose();
 });
 
-test("only the active side bounces; completed gate spins after its bounce and settles afterwards", async () => {
-  for (const mode of ["attack", "defense"]) {
+test("both balls share idle, bounce and completion timelines in attack, defense and capture gates", async () => {
+  for (const mode of ["attack", "defense", "capture"]) {
     const env = environment(), overlay = env.overlay(), effects = env.create(overlay, mode, ["a"]);
+    const balls = find(overlay, "ng-ball"), crops = find(overlay, "ng-ball-crop"), root = find(overlay, "ng-effects")[0];
+    assert.equal(root.dataset.mode, mode);
+    assert.equal(root.dataset.activeSide, mode === "defense" ? "enemy" : "player");
+    const shared = (nodes, phase, at) => {
+      assert(balls.every(ball => ball.dataset.motionPhase === phase && ball.dataset.motionSequence === root.dataset.motionSequence));
+      assert(nodes.every(node => node.getAnimations()[0].startTime === at), "Both CSS animations must receive one shared document timeline timestamp");
+    };
+    shared(crops, "idle", 0);
+    env.advance(200);
+    effects.showQuestion("a"); effects.answer(true, false);
+    assert(balls.every(ball => ball.classList.contains("is-bouncing")));
+    shared(balls, "bounce", 200);
+    env.advance(420);
+    assert(balls.every(ball => !ball.classList.contains("is-spinning")), "An incomplete gate must not spin either ball");
+    shared(crops, "idle", 620);
+    assert.equal(root.dataset.idleEpoch, "2");
+    assert(balls.every(ball => ball.dataset.idleEpoch === "2"));
     effects.showQuestion("a"); effects.answer(true, true);
-    const balls = find(overlay, "ng-ball"), active = balls.find(ball => ball.dataset.side === (mode === "attack" ? "player" : "enemy"));
-    assert(active.classList.contains("is-bouncing"));
-    assert(balls.filter(ball => ball !== active).every(ball => !ball.classList.contains("is-bouncing")));
+    assert(balls.every(ball => ball.classList.contains("is-bouncing")));
     let done = false; const settled = effects.settled().then(() => { done = true; });
-    env.advance(419); assert(active.classList.contains("is-bouncing")); assert.equal(done, false);
-    env.advance(1); assert(!active.classList.contains("is-bouncing")); assert(active.classList.contains("is-spinning"));
-    env.advance(849); assert(active.classList.contains("is-spinning")); assert.equal(done, false);
+    env.advance(419); assert(balls.every(ball => ball.classList.contains("is-bouncing"))); assert.equal(done, false);
+    env.advance(1); assert(balls.every(ball => !ball.classList.contains("is-bouncing") && ball.classList.contains("is-spinning")));
+    shared(balls, "spin", 1040);
+    env.advance(849); assert(balls.every(ball => ball.classList.contains("is-spinning"))); assert.equal(done, false);
     env.advance(25); await settled; assert.equal(done, true);
-    assert(!active.classList.contains("is-spinning"));
+    assert(balls.every(ball => !ball.classList.contains("is-spinning")));
+    shared(crops, "idle", 1890);
+    assert.equal(root.dataset.idleEpoch, "3");
+    assert(balls.every(ball => ball.dataset.idleEpoch === "3"));
     effects.dispose(); assert.equal(env.tasks.size, 0);
   }
+});
+
+test("reduced motion keeps both sides together while disabling drifting/twinkling movement", async () => {
+  const env = environment({ reduced: true }), overlay = env.overlay(), effects = env.create(overlay, "capture", ["a"]);
+  effects.showQuestion("a"); effects.answer(true, true);
+  const root = find(overlay, "ng-effects")[0], balls = find(overlay, "ng-ball");
+  assert.equal(root.dataset.starMotion, "reduced");
+  assert(balls.every(ball => ball.dataset.motionPhase === "bounce"));
+  env.advance(60); assert(balls.every(ball => ball.dataset.motionPhase === "spin"));
+  env.advance(60); assert(balls.every(ball => ball.dataset.motionPhase === "idle" && ball.dataset.idleEpoch === "2"));
+  const wait = effects.settled(); env.advance(300); await wait;
+  effects.dispose(); assert.equal(env.tasks.size, 0);
 });
 
 test("sounds differ for correct/wrong, mute preference persists, and game audio mute is respected", () => {
@@ -170,23 +216,23 @@ test("a delayed bounce callback cannot let the predicted deadline dismiss an ong
   effects.showQuestion("a"); effects.answer(true, true);
   let done = false;
   const settled = effects.settled().then(() => { done = true; });
-  const active = find(overlay, "ng-ball").find(ball => ball.dataset.side === "player");
+  const balls = find(overlay, "ng-ball");
   // Simulate a renderer busy longer than the originally predicted whole
   // bounce+spin. Overdue callbacks resume at actual time rather than time 420.
   env.delayCallbacks(2000);
   env.advance(0);
   await Promise.resolve();
-  assert(active.classList.contains("is-spinning"));
+  assert(balls.every(ball => ball.classList.contains("is-spinning")));
   assert.equal(done, false);
   let lateDone = false;
   const lateWait = effects.settled().then(() => { lateDone = true; });
   await Promise.resolve();
   assert.equal(lateDone, false, "A waiter created after the old deadline must still await the active spin");
   env.advance(849); await Promise.resolve();
-  assert(active.classList.contains("is-spinning"));
+  assert(balls.every(ball => ball.classList.contains("is-spinning")));
   assert.equal(done, false);
   env.advance(1); await Promise.all([settled, lateWait]);
-  assert(!active.classList.contains("is-spinning"));
+  assert(balls.every(ball => !ball.classList.contains("is-spinning")));
   assert.equal(done, true);
   assert.equal(lateDone, true);
   effects.dispose(); assert.equal(env.tasks.size, 0);
