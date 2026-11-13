@@ -371,9 +371,9 @@ export const renalReviewVariants: Record<string, [string, string, string]> = {
     "A nurse follows substantial albuminuria that dominates over inflammatory hematuria. Which accompanying pair most supports the nephrotic pattern?",
   ],
   PATH_REN_nephrotic__complications: [
-    "A patient with nephrotic syndrome develops a newly painful, swollen calf on one side. Which complication should be evaluated promptly?",
+    "A patient with nephrotic syndrome develops a newly painful, swollen calf on one side. Which complication is especially concerning because nephrotic protein loss can alter coagulation?",
     "During nephrotic syndrome care, one leg suddenly becomes more swollen and tender than the other. Which hypercoagulability-related complication is concerning?",
-    "A nurse notices new unilateral calf pain and swelling in a patient with heavy nephrotic protein loss. Which complication must be considered?",
+    "A nurse notices new unilateral calf pain and swelling in a patient with heavy nephrotic protein loss. Which complication is linked to the syndrome's increased tendency to form blood clots?",
   ],
   PATH_REN_nephrotic__tests: [
     "A patient with widespread edema is evaluated for a nephrotic process. Which urine and blood findings most directly support this diagnosis?",
