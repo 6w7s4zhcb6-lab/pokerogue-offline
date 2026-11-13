@@ -125,6 +125,9 @@ test("all 96 disease colors are distinct and stable; every correct response emit
     assert.equal(confetti.length, 1);
     assert.equal(confetti[0].dataset.diseaseColor, observed.get(id));
     assert.equal(confetti[0].dataset.concept, id);
+    const emitters=JSON.parse(confetti[0].dataset.emitters);
+    assert.deepEqual(emitters.map(e=>e.side),["player","enemy"]);
+    assert(Number.isFinite(Number(confetti[0].dataset.born)),"Both particle streams use one shared birth time");
   }
   effects.showQuestion(ids[0]); effects.answer(false);
   assert.equal(find(overlay, "ng-confetti").length, 0);

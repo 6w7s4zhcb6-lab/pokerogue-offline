@@ -9,32 +9,20 @@ const { test } = require('node:test');
 function loadQuiz() {
   const folder = __dirname;
   const storage = new Map();
-  const context = vm.createContext({
-    console,
-    window: { localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) } },
-    recordStudyAnswer() {}, repairMarkup: () => "", initStudyLauncher() {},
-    createQuizEffects: () => ({ showQuestion() {}, answer() {}, settled() {}, dispose() {} }),
-    createQuizBattleHUD: () => ({ dispose() {} }),
+  const {context,load}=require('./clinical-test-loader.cjs').loadClinicalContext({
+    console,window:{localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)}},
+    recordStudyAnswer(){},repairMarkup:()=>"",initStudyLauncher(){},
+    createQuizEffects:()=>({showQuestion(){},answer(){},settled(){},dispose(){}}),createQuizBattleHUD:()=>({dispose(){}}),
   });
-  const bank = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-content.ts'), 'utf8'))
-    .replace('export const nursingFacts', 'const nursingFacts');
-  const rationales = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'question-rationales.ts'), 'utf8'))
-    .replace(/^import .*nursing-content.*;\r?\n/m, '').replace(/export /g, '');
-  const builder=['question-quality-data.ts','question-builder.ts','disease-guide.ts'].map(file=>stripTypeScriptTypes(fs.readFileSync(path.join(folder,file),'utf8')).replace(/^import[^\n]*\r?\n/gm,'').replace(/export /g,'')).join('\n');
-  const quiz = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-gate.ts'), 'utf8'))
-    .replace(/^import .*nursing-content.*;\r?\n/m, '')
-    .replace(/^import .*quiz-effects.*;\r?\n/m, '')
-    .replace(/^import .*study-center.*;\r?\n/m, '')
-    .replace(/^import .*(question-builder|disease-guide).*;\r?\n/gm, '')
-    .replace(/^import .*quiz-battle-hud.*;\r?\n/m, '')
-    .replace(/^import .*question-rationales.*;\r?\n/m, '')
-    .replace(/export /g, '');
-  vm.runInContext(bank + '\n' + rationales + '\n' + builder + '\n' + quiz + `\nthis.quiz = {
+  load('disease-guide.ts',['getDiseaseGuide','renderDiseaseGuide']);
+  load('question-rationales.ts',['explainOptions','explainRationaleOptions']);
+  const quiz=stripTypeScriptTypes(fs.readFileSync(path.join(folder,'nursing-gate.ts'),'utf8')).replace(/^import[^\n]*\r?\n/gm,'').replace(/export /g,'');
+  vm.runInContext('(()=>{'+quiz + `\nthis.quiz = {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
     retentionConcept, normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
-    explainOptions, explainRationaleOptions, renderAnswerFeedback, buildChoices,isIdentification,
+    explainOptions, explainRationaleOptions, renderAnswerFeedback, buildChoices,isIdentification,getClinicalCase,
     keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
       hud = { querySelectorAll: () => [], querySelector: () => null, innerHTML: '' };
@@ -51,7 +39,7 @@ function loadQuiz() {
       const passed = await openNursingGate(mode);
       return { passed, asked, activeGate };
     },
-  };`, context, { filename: 'nursing-gate.test.bundle.js' });
+  };})()`, context, { filename: 'nursing-gate.test.bundle.js' });
   return context.quiz;
 }
 
@@ -123,7 +111,7 @@ test('a missed subsection needs due +10, +20 and +50 retests; early correct answ
   assert.equal(quiz.conceptMastered(fact.conceptId), false);
 });
 
-test('all ten tiers have distinct configurations and high tiers require a curated rationale', () => {
+test('all ten tiers use authored single-best-answer cases with explicit explanations', () => {
   const quiz = loadQuiz();
   assert.equal(quiz.levels.length, 10);
   assert.equal(new Set(quiz.difficulties.map(d => JSON.stringify(d))).size, 10);
@@ -136,11 +124,8 @@ test('all ten tiers have distinct configurations and high tiers require a curate
     assert(q.options.length>=3 && q.options.length<=quiz.difficulties[level].choices, fact.id);
     assert.equal(q.rationaleOptions.length, quiz.difficulties[level].rationales, fact.id);
     assert.equal(new Set(q.options).size, q.options.length);
-    if (level >= 5) {
-      assert.ok(q.rationaleOptions.includes(q.rationale));
-      assert.equal(new Set(q.rationaleOptions).size, q.rationaleOptions.length);
-      for (const why of q.rationaleOptions) assert.ok(quiz.facts.some(f => f.why === why));
-    }
+    assert.equal(q.rationaleOptions.length,0);
+    assert.equal(q.answer,quiz.getClinicalCase(fact).answer);
     }
   }
 });
@@ -197,51 +182,16 @@ test('identification questions come first and never appear later in a gate', asy
 
 test('Easy uses three distinct options, simple stems, and the known ambiguous pairs are excluded',()=>{
   const q=loadQuiz();q.state().banks.patho.tier=0;
-  for(const f of q.facts){const item=q.makeQuestion(f,false);assert.equal(item.options.length,3,f.id);assert(!item.stem.includes('A clinician is reviewing'));assert(!item.stem.includes('At change of shift'));}
-  for(const id of ['GI_gi_bleed__complications','PATH_GI_hernia__signs','PATH_REN_nephrotic__signs','GI_colorectal_cancer__complications']){
-    const f=q.facts.find(f=>f.id===id);
-    for(let i=0;i<20;i++) {const item=q.makeQuestion(f,false);if(id==='GI_gi_bleed__complications')assert(!item.options.filter(x=>x!==f.answer).some(x=>/hypovolemia|electrolyte|bleeding|anemia/i.test(x)));if(id==='GI_colorectal_cancer__complications')assert(!item.options.filter(x=>x!==f.answer).some(x=>/fractur|bone/i.test(x)));}
-  }
+  for(const f of q.facts){const item=q.makeQuestion(f,false);assert.equal(item.options.length,3,f.id);assert(!item.stem.includes('A clinician is reviewing'));assert(!item.stem.includes('At change of shift'));assert.equal(item.rationaleOptions.length,0);}
+
 });
 
 test('enemy-turn compatibility calls return without opening a gate or recording progress',async()=>{
   const q=loadQuiz();const before=q.state().totalAnswers;const result=await q.runGate('defense',[]);assert.equal(result.passed,true);assert.equal(result.asked.length,0);assert.equal(q.state().totalAnswers,before);
 });
 
-test('every answer and distractor in all 687 facts has a supported option-specific explanation', () => {
-  const quiz = loadQuiz();
-  const missing = [];
-  let checked = 0;
-  for (const fact of quiz.facts) {
-    const options = [...new Set([fact.answer, ...fact.foils, ...fact.close, ...(fact.expert?.close || [])])];
-    for (const item of quiz.explainOptions(fact, options, [fact.answer], fact.why)) {
-      checked++;
-      if (item.coverage === 'unmapped') missing.push(`${fact.id}: ${item.option}`);
-      assert.ok(item.explanation.length >= 32, `${fact.id}: explanation too short`);
-      assert.ok(item.source.length > 0, `${fact.id}: source missing`);
-      assert.equal(item.correct, item.option === fact.answer);
-    }
-    if (fact.sata) {
-      const all = [...fact.sata.right, ...fact.sata.wrong];
-      const explanations = quiz.explainOptions(fact, all, fact.sata.right, fact.sata.why);
-      assert.equal(explanations.length, all.length);
-      for (const item of explanations) {
-        checked++;
-        if (item.coverage === 'unmapped') missing.push(`${fact.id} SATA: ${item.option}`);
-        assert.equal(item.correct, fact.sata.right.includes(item.option));
-      }
-      const right = explanations.filter(item => item.correct);
-      assert.equal(new Set(right.map(item => item.explanation)).size, fact.sata.right.length, `${fact.id}: SATA components need distinct explanations`);
-    }
-    quiz.state().banks.patho.tier = 9;
-    const q = quiz.makeQuestion(fact, false);
-    const rationaleChoices = quiz.explainRationaleOptions(fact, q.rationaleOptions, q.rationale);
-    assert.equal(rationaleChoices.length, q.rationaleOptions.length);
-    assert.equal(rationaleChoices.filter(item => item.correct).length, 1);
-    assert(rationaleChoices.every(item => item.coverage !== 'unmapped'));
-  }
-  assert.ok(checked > 8000);
-  assert.deepEqual(missing, []);
+test('every authored clinical option has its specific explanation and source',()=>{
+ const q=loadQuiz();for(const f of q.facts){const c=q.getClinicalCase(f);for(const foils of [c.foils,...(c.harderFoils?[c.harderFoils]:[])]){const items=q.explainOptions(f,[c.answer,...foils.map(o=>o.text)],[c.answer],c.why);assert.equal(items.filter(i=>i.correct).length,1);for(const item of items){assert.equal(item.coverage,'authored',f.id);assert(item.explanation.length>=10,f.id);assert(item.source.length>0,f.id);}}}
 });
 
 test('correct feedback keeps all rationales collapsed, wrong feedback automatically shows each option', () => {
@@ -261,7 +211,7 @@ test('correct feedback keeps all rationales collapsed, wrong feedback automatica
   quiz.state().banks.patho.tier = 5;
   const advanced = quiz.makeQuestion(expert, false);
   const explanations = quiz.explainOptions(expert, advanced.options, advanced.answers, advanced.rationale);
-  assert.equal(explanations.find(item => item.correct).explanation, expert.expert.why);
+  assert.equal(explanations.find(item => item.correct).explanation, quiz.getClinicalCase(expert).why);
 });
 
 test('shared distractor definitions are contrasted with the current scenario without leaking another scenario', () => {

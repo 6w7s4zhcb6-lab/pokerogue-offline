@@ -1,6 +1,7 @@
 import { nursingFacts, type NursingFact } from "./nursing-content";
-import { buildChoices, isIdentification } from "./question-builder";
-import { renderDiseaseGuide } from "./disease-guide";
+import { buildChoices, isIdentification, identificationLabel } from "./question-builder";
+import { getClinicalCase } from "./clinical-bank";
+import { getDiseaseGuide, renderDiseaseGuide } from "./disease-guide";
 import { explainOptions } from "./question-rationales";
 import { canOpenStudy, studyRunId } from "./battle-context";
 
@@ -22,7 +23,7 @@ export function recordStudyAnswer(fact: NursingFact, selected: string[], correct
   const attempt = { fact: fact.id, correct, assisted, at: Date.now() };
   const ledger = clinic ? study.clinic : study.run;
   ledger.push(attempt); if (ledger.length > 5000) ledger.shift();
-  if (!correct) for (const option of selected.filter(s => ![fact.answer, fact.expert?.answer, ...(fact.sata?.right || [])].includes(s))) {
+  if (!correct) for (const option of selected.filter(s => s !== getClinicalCase(fact).answer)) {
     const key = JSON.stringify([fact.id, option]);
     const c = study.confusions[key] ||= { fact: fact.id, option, misses: 0, repairs: [], resolved: false };
     c.misses++; c.repairs = []; c.resolved = false;
@@ -39,7 +40,8 @@ export function repairMarkup(fact: NursingFact): string {
   const matches = Object.values(study.confusions).filter(c => c.misses >= 2 && !c.resolved && factById(c.fact)?.conceptId === fact.conceptId);
   return matches.map(c => {
     const original = factById(c.fact)!;
-    const explanation = explainOptions(original, [original.answer, c.option], [original.answer], original.why);
+    const caseItem=getClinicalCase(original);
+    const explanation = explainOptions(original, [caseItem.answer, c.option], [caseItem.answer], caseItem.why);
     return `<aside class="ng-feedback ng-repair"><strong>Misconception repair · ${c.misses} repeated misses</strong><p>${html(original.concept)} · ${html(original.subsectionName)}</p>${explanation.map(e => `<p><b>${e.correct ? "Supported pattern" : "Previously confused option"}:</b> ${html(e.option)}<br/>${html(e.explanation)}</p>`).join("")}<p>Practice two other subsections of this concept without hints to resolve this confusion.</p></aside>`;
   }).join("");
 }
@@ -106,21 +108,20 @@ export function openStudyCenter(ended = false) {
 function practice(pool: NursingFact[], index: number, results: Attempt[]) {
   if (!overlay) return;
   if (index >= pool.length) { view(`<h2>Clinic complete</h2><p>${results.filter(a=>a.correct).length}/${results.length} correct · ${results.filter(a=>a.assisted).length} hint-assisted.</p><p>Battle mastery and difficulty were unchanged.</p><button id="ng-clinic-again" class="ng-submit">Back to study center</button>`); overlay!.querySelector("#ng-clinic-again")?.addEventListener("click",()=>{close();openStudyCenter();}); return; }
-  const f=pool[index], options=[f.answer,...buildChoices(f,0,3).distractors].sort(()=>Math.random()-.5);
+  const f=pool[index], clinical=buildChoices(f,0), options=[clinical.answer,...clinical.distractors].sort(()=>Math.random()-.5);
   overlay.dataset.clinicFact = f.id;
   let assisted=false, hint=0, graded=false;
-  view(`<h2>Practice clinic · ${index+1}/${pool.length}</h2><p>${isIdentification(f)?"Identify the condition":html(f.concept)} · ${html(f.subsectionName)}</p>${isIdentification(f)?"":repairMarkup(f)}<p>${html(f.cue)} ${html(f.task)}</p><button id="ng-clinic-hint" class="ng-action">Hint 1: mechanism clue</button><p id="ng-clinic-hint-text" aria-live="polite"></p><div class="ng-answers">${options.map((o,i)=>`<button class="ng-option" data-clinic-answer="${i}">${html(o)}</button>`).join("")}</div><div id="ng-clinic-feedback" aria-live="polite"></div>`);
+  view(`<h2>Practice clinic · ${index+1}/${pool.length}</h2><p>${isIdentification(f)?html(identificationLabel(f)):html(f.concept)} · ${html(f.subsectionName)}</p>${isIdentification(f)?"":repairMarkup(f)}<p>${html(clinical.stem)}</p><button id="ng-clinic-hint" class="ng-action">Hint 1: background clue</button><p id="ng-clinic-hint-text" aria-live="polite"></p><div class="ng-answers">${options.map((o,i)=>`<button class="ng-option" data-clinic-answer="${i}">${html(o)}</button>`).join("")}</div><div id="ng-clinic-feedback" aria-live="polite"></div>`);
   overlay!.querySelector("#ng-clinic-hint")?.addEventListener("click",()=>{
     if (graded) return; assisted=true; hint++;
-    const mechanism=nursingFacts.find(x=>x.conceptId===f.conceptId && x.subsectionId==="mechanism");
-    overlay!.querySelector("#ng-clinic-hint-text")!.textContent=hint===1 ? mechanism?.answer || f.miniLesson?.[0] || f.cue : f.why;
+    overlay!.querySelector("#ng-clinic-hint-text")!.textContent=hint===1 ? getDiseaseGuide(f).definition : clinical.rationale;
     const button=overlay!.querySelector<HTMLButtonElement>("#ng-clinic-hint")!; button.textContent="Hint 2: explanation"; if(hint>=2)button.disabled=true;
   });
   overlay!.querySelectorAll<HTMLButtonElement>("[data-clinic-answer]").forEach(b=>b.addEventListener("click",()=>{
-    if(graded)return; graded=true; const selected=options[Number(b.dataset.clinicAnswer)],correct=selected===f.answer;
+    if(graded)return; graded=true; const selected=options[Number(b.dataset.clinicAnswer)],correct=selected===clinical.answer;
     recordStudyAnswer(f,[selected],correct,true,assisted); results.push({fact:f.id,correct,assisted,at:Date.now()});
     overlay!.querySelectorAll<HTMLButtonElement>("[data-clinic-answer],#ng-clinic-hint").forEach(b=>b.disabled=true);
-    overlay!.querySelector("#ng-clinic-feedback")!.innerHTML=`<div class="ng-feedback"><b>${correct?"Correct":"Incorrect"}${assisted?" · hint-assisted":" · independent"}</b>${renderDiseaseGuide(f)}${explainOptions(f,options,[f.answer],f.why).map(e=>`<p><strong>${html(e.option)}:</strong> ${html(e.explanation)}</p>`).join("")}<button class="ng-next" id="ng-clinic-next">${index+1===pool.length?"Finish clinic":"Next question"}</button><div style="clear:both"></div></div>`;
+    overlay!.querySelector("#ng-clinic-feedback")!.innerHTML=`<div class="ng-feedback"><b>${correct?"Correct":"Incorrect"}${assisted?" · hint-assisted":" · independent"}</b>${renderDiseaseGuide(f)}${explainOptions(f,options,[clinical.answer],clinical.rationale).map(e=>`<p><strong>${html(e.option)}:</strong> ${html(clinical.optionReasons[e.option]||e.explanation)}</p>`).join("")}<button class="ng-next" id="ng-clinic-next">${index+1===pool.length?"Finish clinic":"Next question"}</button><div style="clear:both"></div></div>`;
     const next=overlay!.querySelector<HTMLButtonElement>("#ng-clinic-next")!;next.addEventListener("click",()=>practice(pool,index+1,results));next.focus();
   }));
 }
@@ -134,4 +135,5 @@ export function initStudyLauncher() {
   b.style.cssText="position:fixed;left:8px;top:8px;z-index:2147483000;padding:9px;border-radius:10px;background:#14243d;color:#eff5ff;border:1px solid #67abce;cursor:pointer";
   b.addEventListener("click",()=>{if(canOpenStudy())openStudyCenter();else {b.textContent="Open at title or battle command menu";setTimeout(()=>b.textContent="Study clinic & debrief",2500);}});document.body.appendChild(b);
 }
+
 

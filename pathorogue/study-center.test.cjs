@@ -1,8 +1,9 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),vm=require('vm'),path=require('path');
 const {stripTypeScriptTypes}=require('node:module');
 function load(storage=new Map()){
- const c=vm.createContext({window:{localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}},canOpenStudy:()=>true,studyRunId:()=>"test-run"});
- const source=['nursing-content.ts','question-rationales.ts','question-quality-data.ts','question-builder.ts','disease-guide.ts','study-center.ts'].map(f=>stripTypeScriptTypes(fs.readFileSync(path.join(__dirname,f),'utf8')).replace(/^import[^\n]*\n/gm,'').replace(/export /g,'')).join('\n');
+ const {context:c,load:loadModule}=require('./clinical-test-loader.cjs').loadClinicalContext({window:{localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}},canOpenStudy:()=>true,studyRunId:()=>"test-run"});
+ loadModule('disease-guide.ts',['getDiseaseGuide','renderDiseaseGuide']);loadModule('question-rationales.ts',['explainOptions','explainRationaleOptions']);
+ const source=stripTypeScriptTypes(fs.readFileSync(path.join(__dirname,'study-center.ts'),'utf8')).replace(/^import[^\n]*\n/gm,'').replace(/export /g,'');
  vm.runInContext(source+'\nthis.api={recordStudyAnswer,repairMarkup,finishStudyRun,facts:nursingFacts,state:()=>study};',c);return c.api;
 }
 test('repeated specific wrong options trigger repair; hints cannot resolve it; two fresh subsections can',()=>{

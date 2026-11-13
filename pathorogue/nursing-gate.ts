@@ -1,11 +1,11 @@
 /**
  * Nursing question-gate add-on for the community PokéRogue source tree.
  * Original Pokémon battle mechanics remain in MoveEffectPhase.hitCheck().
- * The educational content is generated exclusively from uploaded pathophysiology
- * lecture slides. No AI API, credentials, or network calls.
+ * Authored clinical practice cases cover the uploaded lecture topics.
+ * No AI API, credentials, or network calls.
  */
 import { nursingFacts, type NursingFact } from "./nursing-content";
-import { buildChoices, isIdentification } from "./question-builder";
+import { buildChoices, isIdentification, identificationLabel, CLINICAL_DIFFICULTY } from "./question-builder";
 import { renderDiseaseGuide } from "./disease-guide";
 import { createQuizEffects } from "./quiz-effects";
 import { recordStudyAnswer, repairMarkup, initStudyLauncher } from "./study-center";
@@ -51,6 +51,7 @@ type PreparedQuestion = {
   stem: string;
   options: string[];
   rationaleOptions: string[];
+  optionReasons?: Record<string,string>;
   level: number;
   isReview: boolean;
 };
@@ -59,20 +60,9 @@ const STORAGE_KEY = "pokerogue.pathophysiology-gate.v3";
 const PREVIOUS_STORAGE_KEY = "pokerogue.pathophysiology-gate.v2";
 const LEGACY_STORAGE_KEY = "pokerogue.nursing-gate.v1";
 const LEVELS = ["Easy", "Medium", "Hard", "Very Hard", "Extreme", "Hard Extreme", "Super Extreme", "Ultra Extreme", "Sub Max", "Max"] as const;
-// Higher tiers use the existing clinical bank rather than invented scenarios:
-// first increase alternatives, then require the matching explanation as well.
-const DIFFICULTY = [
-  { choices: 3, close: false, rationales: 0 },
-  { choices: 4, close: false, rationales: 0 },
-  { choices: 5, close: false, rationales: 0 },
-  { choices: 6, close: false, rationales: 0 },
-  { choices: 6, close: true, rationales: 0 },
-  { choices: 4, close: true, rationales: 2 },
-  { choices: 5, close: true, rationales: 3 },
-  { choices: 6, close: true, rationales: 4 },
-  { choices: 6, close: true, rationales: 5 },
-  { choices: 6, close: true, rationales: 6 },
-] as const;
+// Difficulty introduces authored reduced-cue cases and closer alternatives.
+// Every displayed item remains a single-best-answer clinical question.
+const DIFFICULTY = CLINICAL_DIFFICULTY.map(d => ({ ...d, close: d.advanced > 0, rationales: 0 }));
 const REVIEW_DELAYS = [10, 20, 50] as const;
 const PREFETCH = 5;
 const bankNames: Record<Bank, string> = { patho: "Pathophysiology" };
@@ -213,13 +203,8 @@ function chooseFresh(bank: Bank, excluded: Set<string>, conceptId: string | null
 }
 
 function makeQuestion(f: NursingFact, isReview: boolean): PreparedQuestion {
-  const level=state.banks[f.bank].tier, difficulty=DIFFICULTY[level];
-  if(f.sata && level>=3 && level<=4 && Math.random()<(level===4?.48:.28))return {fact:f,answer:f.sata.right.join(" / "),answers:[...f.sata.right],isSelectAll:true,rationale:f.sata.why,stem:f.sata.cue+" "+f.sata.task,options:shuffle([...f.sata.right,...f.sata.wrong]),rationaleOptions:[],level,isReview};
-  const built=buildChoices(f,level,difficulty.choices);
-  const rationale=level>=5 && f.expert?.why ? f.expert.why : f.why;
-  const related=factsFor(f.bank).filter(other=>other.id!==f.id && other.why!==rationale);
-  const explanations=[...new Set([...shuffle(related.filter(other=>built.distractors.includes(other.answer))).map(other=>other.why),...shuffle(related.filter(other=>other.topic!==f.topic)).map(other=>other.why)])].slice(0,Math.max(0,difficulty.rationales-1));
-  return {fact:f,answer:built.answer,answers:[built.answer],isSelectAll:false,rationale,stem:built.stem,options:shuffle([built.answer,...built.distractors]),rationaleOptions:difficulty.rationales?shuffle([rationale,...explanations]):[],level,isReview};
+  const level=state.banks[f.bank].tier, built=buildChoices(f,level);
+  return {fact:f,answer:built.answer,answers:[built.answer],isSelectAll:false,rationale:built.rationale,stem:built.stem,options:shuffle([built.answer,...built.distractors]),rationaleOptions:[],optionReasons:built.optionReasons,level,isReview};
 }
 function fillQueue() {
   if (activeGate && prepared.length >= PREFETCH) return;
@@ -449,7 +434,7 @@ function blockGameplayKeys(event: KeyboardEvent) {
   event.stopImmediatePropagation();
 }
 
-/** Attack and capture require 3 correct answers, defense 2; one incorrect ends the check.
+/** Player attacks and capture attempts require 3 correct answers; one incorrect ends the check.
  * Questions within one check stay in the same concept and use distinct
  * subsections. The game then performs its native
  * accuracy roll exactly as before. */
@@ -480,7 +465,7 @@ export async function openNursingGate(mode: Gate, context?: QuizBattleContext): 
     quizEffects = createQuizEffects(shade, mode, [...new Set(nursingFacts.map(f => f.conceptId))]);
     for (let n = 1; n <= required; n++) {
       let q = takeQuestion(conceptId, usedInGate);
-      if(n===1){const identification=conceptFacts(q.fact.conceptId).find(isIdentification);if(identification){const item=learningItem(identification);q=makeQuestion(identification,!!item && item.misses>0&&!item.mastered&&item.dueAt<=state.banks[state.selected].total);}}
+      if(n===1){const identification=conceptFacts(q.fact.conceptId).filter(isIdentification).sort((a,b)=>{const x=learningItem(a),y=learningItem(b);const rank=(i:LearningItem|undefined)=>i&&i.misses>0&&!i.mastered&&i.dueAt<=state.banks[state.selected].total?0:!i||i.attempts===0?1:2;return rank(x)-rank(y)||(x?.lastSeenAt||0)-(y?.lastSeenAt||0);})[0];if(identification){const item=learningItem(identification);q=makeQuestion(identification,!!item && item.misses>0&&!item.mastered&&item.dueAt<=state.banks[state.selected].total);for(const other of conceptFacts(q.fact.conceptId).filter(isIdentification))if(other.id!==identification.id)usedInGate.add(other.id);}}
       if(retentionGate){q.isReview=true;q.isRetention=true;}
       // The first concept anchors every question in this check, including reviews.
       if (!conceptId) conceptId = q.fact.conceptId;
@@ -502,7 +487,7 @@ export async function openNursingGate(mode: Gate, context?: QuizBattleContext): 
 }
 
 function renderAnswerFeedback(q: PreparedQuestion, correct: boolean, number: number, required: number, mode: Gate): string {
-  const explanations = explainOptions(q.fact, q.options, q.answers, q.rationale);
+  const explanations = explainOptions(q.fact, q.options, q.answers, q.rationale).map(item=>({...item,explanation:q.optionReasons?.[item.option]||item.explanation}));
   const rationaleChoices = explainRationaleOptions(q.fact, q.rationaleOptions, q.rationale);
   const result = correct
     ? number === required
@@ -520,7 +505,7 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
     if (!questionHost) { resolve(false); return; }
     const bank = state.banks[q.fact.bank];
     const challenge = mode === "capture" ? "EARN YOUR POKÉ BALL THROW" : mode === "attack" ? "EARN YOUR ATTACK'S ACCURACY ROLL" : "EARN YOUR CHANCE TO DODGE";
-    questionHost.innerHTML = `<div class="ng-dialog" data-mode="${mode}" data-concept="${escapeHtml(q.fact.conceptId)}" data-subsection="${escapeHtml(q.fact.subsectionId)}" data-identification="${isIdentification(q.fact)}" data-level="${q.level + 1}" data-review="${q.isReview}" data-retention="${!!q.isRetention}"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${isIdentification(q.fact) ? "Identify the condition" : escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isRetention ? " · MASTERY RETENTION CHECK · EVERY 12 ANSWERS" : q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}${q.rationaleOptions.length ? " · ANSWER AND EXPLANATION REQUIRED" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-explanations" aria-live="polite"></div><div id="ng-response" aria-live="polite"></div><p class="ng-note">${mode === "capture" ? "3 correct answers earn the throw. Passing keeps the normal capture odds; a mistake blocks this throw and keeps the ball." : `${required} correct answers required. A mistake causes your attack to miss. Pokémon immunity and Protect effects still work normally.`}</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
+    questionHost.innerHTML = `<div class="ng-dialog" data-mode="${mode}" data-concept="${escapeHtml(q.fact.conceptId)}" data-subsection="${escapeHtml(q.fact.subsectionId)}" data-identification="${isIdentification(q.fact)}" data-level="${q.level + 1}" data-review="${q.isReview}" data-retention="${!!q.isRetention}"><div class="ng-kicker">${challenge} · Question ${number} of ${required}</div><div class="ng-detail">${escapeHtml(bankNames[q.fact.bank])} · ${escapeHtml(q.fact.topicLabel)} · ${isIdentification(q.fact) ? identificationLabel(q.fact) : escapeHtml(q.fact.concept)} · ${escapeHtml(q.fact.subsectionName)} · ${escapeHtml(LEVELS[q.level])} (level ${q.level + 1}/10)${q.isRetention ? " · MASTERY RETENTION CHECK · EVERY 12 ANSWERS" : q.isReview ? " · SCHEDULED MASTERY REVIEW" : ""}${q.isSelectAll ? " · SELECT ALL THAT APPLY" : ""}${q.rationaleOptions.length ? " · ANSWER AND EXPLANATION REQUIRED" : ""}</div><h2>${escapeHtml(q.stem)}</h2><div class="ng-answers">${q.options.map((option, i) => `<button class="ng-option" type="button" aria-pressed="false" data-answer="${i}"><b>${String.fromCharCode(65 + i)}.</b> ${escapeHtml(option)}</button>`).join("")}</div>${q.isSelectAll ? `<button id="ng-submit" type="button" class="ng-submit">Submit selected answers</button>` : ""}<div id="ng-explanations" aria-live="polite"></div><div id="ng-response" aria-live="polite"></div><p class="ng-note">${mode === "capture" ? "3 correct answers earn the throw. Passing keeps the normal capture odds; a mistake blocks this throw and keeps the ball." : `${required} correct answers required. A mistake causes your attack to miss. Pokémon immunity and Protect effects still work normally.`}</p><p class="ng-note">${escapeHtml(q.fact.source)}</p></div>`;
     quizEffects?.showQuestion(q.fact.conceptId);
     let answered = false;
     const selectedOptions = new Set<string>();
@@ -602,5 +587,7 @@ if (typeof document !== "undefined") {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initNursingUI, { once: true });
   else initNursingUI();
 }
+
+
 
 

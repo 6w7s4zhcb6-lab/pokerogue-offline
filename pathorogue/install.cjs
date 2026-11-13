@@ -108,7 +108,7 @@ capture=capture.replace(captureAnchors.start,[
 ].join("\n"));
 main=main.replace(/^(import "#app\/polyfills";[^\r\n]*\r?\n)/, '$1import { initNursingUI } from "./mods/nursing-gate"; // PATHOROGUE_UI_BOOT\n');
 main=main.replace("async function startGame(): Promise<void> {", "async function startGame(): Promise<void> {\n  initNursingUI();");
-const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","question-quality-data.ts","question-builder.ts","disease-guide.ts","study-center.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
+const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","clinical-types.ts","clinical-bank.ts","clinical-gi.ts","clinical-renal.ts","clinical-renal-advanced-a.ts","clinical-renal-advanced-b.ts","clinical-msk.ts","question-builder.ts","disease-guide.ts","study-center.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
 for(const name of modFiles){
   const source=path.join(__dirname,name);
   assert(fs.existsSync(source)&&fs.statSync(source).isFile()&&fs.statSync(source).size>0,"Missing or empty "+name);

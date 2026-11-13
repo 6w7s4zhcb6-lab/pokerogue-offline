@@ -1,3 +1,4 @@
+import { clinicalExplanation } from "./question-builder";
 import { nursingFacts, type NursingFact } from "./nursing-content";
 
 export type OptionRationale = { option: string; correct: boolean; explanation: string; source: string; coverage: "bank" | "authored" | "unmapped" };
@@ -32,6 +33,8 @@ function correspondingFact(option: string, fact: NursingFact): NursingFact | und
 export function explainOptions(fact: NursingFact, renderedOptions: readonly string[], answers: readonly string[], rationale: string): OptionRationale[] {
   return renderedOptions.map(option => {
     const correct = answers.includes(option);
+    const authored=clinicalExplanation(fact,option);
+    if(authored)return {option,correct,explanation:authored,source:fact.source,coverage:"authored"};
     const specific = (correct ? SATA_POSITIVE[fact.id]?.[option] : null) || SPECIFIC[option];
     if (specific) return { option, correct, explanation: `${specific} ${correct ? "" : `For this scenario: ${clinicalReason(fact, rationale)}`}`.trim(), source: fact.source, coverage: "authored" };
     if (correct) return { option, correct, explanation: clinicalReason(fact, rationale), source: fact.source, coverage: "bank" };

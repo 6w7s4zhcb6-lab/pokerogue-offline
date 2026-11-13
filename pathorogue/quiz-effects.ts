@@ -162,7 +162,6 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     root.appendChild(ball);
     return ball;
   });
-  const activeBall = balls[mode === "defense" ? 1 : 0];
   const ballCrops = balls.map(ball => ball.firstElementChild as HTMLElement);
 
   const controls = document.createElement("div");
@@ -345,20 +344,22 @@ export function createQuizEffects(overlay: HTMLElement, mode: QuizMode, conceptI
     const draw = canvas.getContext("2d");
     if (!draw) { wrapper.remove(); return; }
     draw.scale(dpr, dpr);
-    const ball = activeBall.getBoundingClientRect();
     const compact = width <= 940;
     const born = performance.now();
     const life = reducedMotion ? 170 : 1000;
-    const count = reducedMotion ? 12 : 64;
+    const count = reducedMotion ? 8 : 48;
     const burstColor = currentColor;
-    const particles: Particle[] = Array.from({ length: count }, () => ({
-      x: compact ? width * (activeSide === "player" ? 0.25 : 0.75) : ball.left + ball.width / 2 - rect.left,
-      y: compact ? height * 0.24 : ball.top + ball.height / 2 - rect.top,
+    const origins = balls.map(ball => { const r = ball.getBoundingClientRect();return {side:ball.dataset.side,x:r.left+r.width/2-rect.left,y:r.top+r.height/2-rect.top}; });
+    wrapper.dataset.emitters = JSON.stringify(origins);
+    wrapper.dataset.born = String(born);
+    const particles: Particle[] = origins.flatMap(origin => Array.from({ length: count }, () => ({
+      x: origin.x,
+      y: origin.y,
       vx: (Math.random() - 0.5) * (reducedMotion ? 25 : 430),
-      vy: reducedMotion ? -10 : compact ? -90 - Math.random() * 110 : -170 - Math.random() * 230,
+      vy: reducedMotion ? -10 : compact ? -20 - Math.random() * 50 : -170 - Math.random() * 230,
       angle: Math.random() * Math.PI * 2, spin: (Math.random() - 0.5) * 10,
       born, life: life * (0.75 + Math.random() * 0.25), size: reducedMotion ? 4 : 4 + Math.random() * 5,
-    }));
+    })));
     const burst = { wrapper, raf: 0 };
     bursts.add(burst);
     const frame = (now: number) => {

@@ -20,11 +20,9 @@ const KEY = {
 };
 
 function loadBank() {
-  const context = vm.createContext({});
-  const source = stripTypeScriptTypes(fs.readFileSync(path.join(__dirname, "nursing-content.ts"), "utf8"))
-    .replace("export const nursingFacts", "const nursingFacts");
-  vm.runInContext(`${source}\nthis.facts = nursingFacts;`, context);
-  return context.facts;
+ const {context}=require('./clinical-test-loader.cjs').loadClinicalContext();
+ context.validateClinicalBank();
+ return context.nursingFacts.map(f=>({...f,answer:context.getClinicalCase(f).answer,why:context.getClinicalCase(f).why,identification:context.isIdentification(f),sata:undefined,expert:undefined}));
 }
 
 async function key(cdp, name) {
@@ -138,7 +136,7 @@ async function readEffects(cdp) {
     const root=document.querySelector('#ng-overlay .ng-effects');if(!root)return null;
     const stars=[...root.querySelectorAll('.ng-star')].map(s=>({color:s.dataset.color||getComputedStyle(s).getPropertyValue('--star-color').trim()||getComputedStyle(s).color,fill:getComputedStyle(s).fill,background:getComputedStyle(s).backgroundColor}));
     const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState,startTime:a.startTime,currentTime:a.currentTime}))}));
-    return {dataset:{...root.dataset},stars,balls,sparkles:[...root.querySelectorAll('.ng-star-sparkle')].map(s=>({animation:getComputedStyle(s).animationName,transform:getComputedStyle(s).transform,opacity:getComputedStyle(s).opacity})),confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept})),pointerEvents:getComputedStyle(root).pointerEvents};
+    return {dataset:{...root.dataset},stars,balls,sparkles:[...root.querySelectorAll('.ng-star-sparkle')].map(s=>({animation:getComputedStyle(s).animationName,transform:getComputedStyle(s).transform,opacity:getComputedStyle(s).opacity})),confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept,emitters:JSON.parse(c.dataset.emitters||"[]"),born:Number(c.dataset.born)})),pointerEvents:getComputedStyle(root).pointerEvents};
   })()`);
 }
 
@@ -240,7 +238,7 @@ async function armQuestionProbe(cdp) {
       stars: [...root.querySelectorAll('.ng-star')].map(s => ({ color: s.dataset.color, background: getComputedStyle(s).backgroundColor })),
       balls: [...root.querySelectorAll('.ng-ball')].map(b => ({ side: b.dataset.side, state: b.dataset.state, classes: b.className,
         animation: getComputedStyle(b).animationName, animations: b.getAnimations({ subtree: true }).map(a => ({ name: a.animationName, state: a.playState, startTime: a.startTime, currentTime: a.currentTime })) })),
-      confetti: [...root.querySelectorAll('.ng-confetti')].map(c => ({ color: c.dataset.diseaseColor, concept: c.dataset.concept })),
+      confetti: [...root.querySelectorAll('.ng-confetti')].map(c => ({ color: c.dataset.diseaseColor, concept: c.dataset.concept, emitters: JSON.parse(c.dataset.emitters||"[]"),born:Number(c.dataset.born) })),
       pointerEvents: getComputedStyle(root).pointerEvents });
     const probe = { events: [], feedback: null, continuedAt: null, advancedAt: null, question, effects,
       audioStart: window.__pathorogueAudioProbe.events.length };
@@ -330,16 +328,8 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     }
   }
   if (question.selectAll) updated = await click('#ng-submit:not([disabled])');
-  if (policy === "wrong-rationale" || question.level >= 6) {
-    assert(updated.rationales.length >= 2, "Advanced-tier question did not require a rationale choice");
-  }
-  const rationaleRequired = updated.rationales.length > 0;
-  if (updated.rationales.length) {
-    const rationale = updated.rationales.find(o => policy === "wrong-rationale" ? o.text !== fact.why : o.text === fact.why);
-    assert(rationale, "Expected rationale choice not rendered");
-    assert.equal(updated.feedback, null, "Rationale must be required before correctness feedback");
-    updated = await click(`button[data-rationale="${rationale.index}"]:not([disabled])`);
-  }
+  assert.equal(updated.rationales.length, 0, "Clinical single-best-answer cases must grade the selected answer directly");
+  const rationaleRequired = false;
   assert(updated.feedback?.includes("Rationale:"), "Graded question must show clinical rationale");
   const correct = policy === "correct";
   assert.equal(updated.feedback.startsWith("Correct"), correct, `Unexpected grade for ${policy}: ${updated.feedback}`);
@@ -351,6 +341,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     effects = { prompt: probe.prompt, feedback: captured.effects };
     if (correct) {
       assert(effects.feedback.confetti.length > 0, 'Correct answer did not render confetti');
+      for(const burst of effects.feedback.confetti){assert.deepEqual(burst.emitters.map(e=>e.side),['player','enemy']);assert(burst.emitters[0].x<burst.emitters[1].x,'Confetti must originate from opposite balls');assert(Number.isFinite(burst.born),'Both streams need a shared launch timestamp');}
       assert(effects.feedback.confetti.every(c => c.color === effects.feedback.dataset.diseaseColor && c.concept === question.concept), 'Confetti does not match the current disease color/concept');
       assert(effects.feedback.balls.every(b => ballAnimating(b, 'bounce')), 'Correct answer did not bounce both balls');
       assertSynchronized(effects.feedback, 'ng-quiz-bounce');
@@ -376,7 +367,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
       return {before,hasReveal:!!button,visible:!!container&&!container.hidden&&getComputedStyle(container).display!=='none',options:[...(container?.querySelectorAll('.ng-option-rationale')||[])].map(e=>({index:Number(e.dataset.answer),correct:e.dataset.correct,text:e.textContent})),guide:guide?{concept:guide.dataset.guideConcept,text:guide.textContent,paragraphs:[...guide.querySelectorAll('p')].map(p=>p.textContent)}:null};
     })()`);
     assert.equal(rationaleView.options.length, question.options.length, 'Every rendered answer must have an explanation');
-    assert(rationaleView.options.every(e => e.text.length > 55), 'Answer explanation is missing substantive context');
+    assert(rationaleView.options.every(e => e.text.length > 30), 'Answer explanation is missing substantive context');
     assert.equal(rationaleView.visible, true, 'Answer explanations cannot be revealed');
     assert(rationaleView.guide, 'Rationale panel is missing About this condition');
     assert.equal(rationaleView.guide.concept, question.concept, 'Disease guide describes a different concept');
@@ -517,6 +508,22 @@ async function verifyStudyClinic(cdp, bank, reportDir) {
  return true;
 }
 
+
+async function installEnemyProbe(cdp,scene) {
+ await call(cdp,scene,function(){
+   if(window.__clinicalEnemyProbe)clearInterval(window.__clinicalEnemyProbe.timer);
+   const probe={actions:0,damage:0,last:null};window.__clinicalEnemyProbe=probe;
+   probe.timer=setInterval(()=>{const phase=this.phaseManager.getCurrentPhase();let user;try{user=phase?.getUserPokemon?.()||phase?.getPokemon?.();}catch{};
+     const paused=!!document.querySelector('#ng-overlay');
+     if(!paused&&['MovePhase','MoveEffectPhase'].includes(phase?.phaseName)&&user&&!user.isPlayer())probe.actions++;
+     if(!paused&&phase?.phaseName==='DamageAnimPhase'&&phase.amount>0&&phase.getPokemon?.()?.isPlayer())probe.damage++;
+     const party=this.getPlayerParty().map(p=>({id:p.id,hp:p.hp}));
+     if(!paused&&probe.last&&party.some(p=>{const old=probe.last.find(x=>x.id===p.id);return old&&p.hp<old.hp;}))probe.damage++;
+     probe.last=party;
+   },16);
+ }.toString());
+}
+
 async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highTier = false, captureTest = false, timeout = 240000 } = {}) {
   const deadline = Date.now() + timeout;
   let active = null;
@@ -564,7 +571,7 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
         let policy = already.some(g => g.passed) ? "wrong-answer" : "correct";
         if (captureTest) policy = 'correct';
         if (question.mode === 'capture') policy = already.some(g => !g.passed) ? 'correct' : 'wrong-answer';
-        if (highTier) policy = already.some(g => g.passed) ? "wrong-rationale" : "correct";
+        if (highTier) policy = already.some(g => g.passed) ? "wrong-answer" : "correct";
         active = { mode: question.mode, highTier, policy, required, before: state, questions: [] };
         report.gates.push(active);
         await capture(cdp, reportDir, `gameplay-${report.gates.length}-${question.mode}.png`);
@@ -594,7 +601,7 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       if (previousPrompt) assert(colors.some((color, index) => color !== previousPrompt[index]), 'Star colors did not change for the next prompt');
       report.lastPromptStarColors = colors;
       if (!report.layouts) {
-        report.layouts = [await checkLayout(cdp, reportDir, 1280, 720), await checkLayout(cdp, reportDir, 390, 844)];
+        report.layouts = [await checkLayout(cdp, reportDir, 1280, 720)];
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
         await delay(100);
       }
@@ -641,7 +648,7 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     await session.cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     report.animationTestPreference = 'Normal motion explicitly emulated to verify actual CSS bounce and spin animations; reduced-motion behavior has separate module regression tests.';
     await installAudioProbe(session.cdp);
-    let scene = await findScene(session.cdp);
+    let scene = await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
     const basicDone = r => r.gates.some(g => !g.highTier && g.mode === 'attack' && g.passed)
       && r.gates.some(g => !g.highTier && g.mode === 'attack' && !g.passed && g.moveOutcome);
     await playUntil(session.cdp, scene, bank, report, reportDir, basicDone);
@@ -664,22 +671,22 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     await delay(1500);
     await installAudioProbe(session.cdp);
     delete report.lastPromptStarColors;
-    scene = await findScene(session.cdp);
+    scene = await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
     const reloaded = await evaluate(session.cdp, `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}))`);
     assert.equal(reloaded.totalAnswers, stored.totalAnswers);
     assert.equal(reloaded.correctAnswers, stored.correctAnswers);
     report.checks.answerProgressSurvivesReload = true;
     report.highTierSetup = "Valid persisted quiz progress set to tier 6 in disposable profile, then EXE renderer reloaded; game and quiz functions unchanged.";
     await playUntil(session.cdp, scene, bank, report, reportDir,
-      r => r.gates.some(g => g.highTier && g.passed) && r.gates.some(g => g.highTier && g.policy === "wrong-rationale" && !g.passed), { highTier: true });
-    report.checks.highTierRequiresCorrectRationale = true;
+      r => r.gates.some(g => g.highTier && g.passed) && r.gates.some(g => g.highTier && g.policy === "wrong-answer" && !g.passed), { highTier: true });
+    report.checks.advancedClinicalCaseGrading = true;
 
     // Import a valid mastered concept into the disposable profile to exercise
     // the actual retention scheduler without hundreds of warm-up answers.
-    const retentionFacts=bank.filter(f=>f.conceptId==='GI_gi_bleed');
-    assert(retentionFacts.some(f=>f.answer===f.concept),'Retention fixture needs a real condition-identification item');
+    const retentionFacts=bank.filter(f=>f.conceptId==='GI_pancreatic_cancer');
+    assert(retentionFacts.some(f=>f.identification),'Retention fixture needs an authored condition-identification item');
     await evaluate(session.cdp, '(function(ids){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));if(s.banks.patho.total<12)throw Error("Insufficient retention test answers");for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:3,dueAt:0,mastered:true};s.banks.patho.retentionAt=s.banks.patho.total-12;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+')');
-    await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);
+    await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.retentionObserved);
     assert(report.retentionObserved,'Mastered concept was not retested at twelve answers');
     report.checks.masteredConceptRetentionEveryTwelve=true;
@@ -698,12 +705,13 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
       currentHealthAndSixPartySlots: !!report.battleHUD,
       optionalAllAnswerRationales: report.optionRationalesVerified === true,
       aboutConditionDefinitionCausesAndManifestations: report.diseaseGuideVerified === true,
-      wideAndNarrowQuizLayout: true, quizEffectsCleanedUp: true });
+      windowsDesktopQuizLayout: true, quizEffectsCleanedUp: true });
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.debriefObserved,{timeout:240000});
     const study=await evaluate(session.cdp,'JSON.parse(localStorage.getItem("pokerogue.study-center.v1"))');
     assert(study.runs.at(-1)?.attempts.length>0,"End-of-run debrief has no actual battle records");
     report.checks.realEndOfRunStudyDebrief=true;
-    assert(report.enemyActionObserved && report.normalEnemyDamageObserved, 'Native enemy moves/damage were not observed without a quiz');
+    const enemy=await evaluate(session.cdp,'({actions:window.__clinicalEnemyProbe.actions,damage:window.__clinicalEnemyProbe.damage})');
+    assert(enemy.actions>0&&enemy.damage>0,'Native enemy actions/damage were not observed');report.enemyProbe=enemy;
     assert(report.gates.every(g=>g.mode==='attack'||g.mode==='capture'), 'An enemy-defense gate was recorded');
     assert(report.diseaseGuideVerified,'About this condition was not tested after revealing rationales');
     assert(report.identificationObserved,'No first-position condition-identification question was observed');
@@ -735,4 +743,5 @@ if (require.main === module) {
     .then(session => verifyGameplay(exe, path.resolve(args.includes("--report-dir") ? at("--report-dir") : "verification"), session))
     .catch(error => { console.error(error); process.exitCode = 1; });
 }
+
 

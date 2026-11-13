@@ -45,6 +45,9 @@ function verifyDist(root) {
   for (const text of ["ng-hud", "ng-overlay", "ng-battle-hud", "ng-option-rationales", "ng-star-twinkle", "MASTERY TRACKER", "Rationale:", "SCHEDULED MASTERY REVIEW", "pokerogue.pathophysiology-gate.v3"]) {
     assert(built.includes(text), `PathoRogue runtime missing from compiled output: ${text}`);
   }
+  for(const text of ["Which healing stage is occurring?", "solid pancreatic-head lesion", "Identify the treatment", "What it is:"]) {
+    assert(built.includes(text), `Authored clinical question update missing from compiled output: ${text}`);
+  }
   return { entry: manifest.js, javascriptChunks: scripts.length, pathophysiologyRuntimePresent: true };
 }
 
