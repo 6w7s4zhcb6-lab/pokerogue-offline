@@ -20,19 +20,21 @@ function loadQuiz() {
     .replace('export const nursingFacts', 'const nursingFacts');
   const rationales = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'question-rationales.ts'), 'utf8'))
     .replace(/^import .*nursing-content.*;\r?\n/m, '').replace(/export /g, '');
+  const builder=['question-quality-data.ts','question-builder.ts','disease-guide.ts'].map(file=>stripTypeScriptTypes(fs.readFileSync(path.join(folder,file),'utf8')).replace(/^import[^\n]*\r?\n/gm,'').replace(/export /g,'')).join('\n');
   const quiz = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-gate.ts'), 'utf8'))
     .replace(/^import .*nursing-content.*;\r?\n/m, '')
     .replace(/^import .*quiz-effects.*;\r?\n/m, '')
     .replace(/^import .*study-center.*;\r?\n/m, '')
+    .replace(/^import .*(question-builder|disease-guide).*;\r?\n/gm, '')
     .replace(/^import .*quiz-battle-hud.*;\r?\n/m, '')
     .replace(/^import .*question-rationales.*;\r?\n/m, '')
     .replace(/export /g, '');
-  vm.runInContext(bank + '\n' + rationales + '\n' + quiz + `\nthis.quiz = {
+  vm.runInContext(bank + '\n' + rationales + '\n' + builder + '\n' + quiz + `\nthis.quiz = {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
     retentionConcept, normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
-    explainOptions, explainRationaleOptions, renderAnswerFeedback,
+    explainOptions, explainRationaleOptions, renderAnswerFeedback, buildChoices,isIdentification,
     keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
       hud = { querySelectorAll: () => [], querySelector: () => null, innerHTML: '' };
@@ -131,7 +133,7 @@ test('all ten tiers have distinct configurations and high tiers require a curate
     const q = quiz.makeQuestion(fact, false);
     assert.equal(q.level, level);
     if (q.isSelectAll) continue;
-    assert.equal(q.options.length, quiz.difficulties[level].choices, fact.id);
+    assert(q.options.length>=3 && q.options.length<=quiz.difficulties[level].choices, fact.id);
     assert.equal(q.rationaleOptions.length, quiz.difficulties[level].rationales, fact.id);
     assert.equal(new Set(q.options).size, q.options.length);
     if (level >= 5) {
@@ -154,8 +156,8 @@ test('difficulty climbs on ten correct answers, drops on three misses and stays 
   assert.equal(quiz.state().banks.patho.tier, 0);
 });
 
-test('attack and capture need three correct, defense two, and one miss stops each check', async () => {
-  for (const [mode, required] of [['attack', 3], ['defense', 2], ['capture', 3]]) {
+test('player attack and capture need three correct, and one miss stops each check', async () => {
+  for (const [mode, required] of [['attack', 3], ['capture', 3]]) {
     const quiz = loadQuiz();
     const result = await quiz.runGate(mode, Array(required).fill(true));
     assert.equal(result.passed, true);
@@ -181,6 +183,29 @@ test('answer totals and per-subsection progress survive offline storage round-tr
   assert.equal(restored.banks.patho.items[fact.id].attempts, 2);
   assert.equal(restored.banks.patho.items[fact.id].correct, 1);
   assert.equal(restored.banks.patho.items[fact.id].misses, 1);
+});
+
+test('identification questions come first and never appear later in a gate', async () => {
+  const q=loadQuiz();
+  for(let i=0;i<40;i++) {
+    const result=await q.runGate('attack',[true,true,true]);
+    const questions=result.asked.map(a=>q.facts.find(f=>f.id===a.id));
+    const identification=questions.filter(q.isIdentification);
+    if(identification.length) {assert(q.isIdentification(questions[0]));assert.equal(identification.length,1);}
+  }
+});
+
+test('Easy uses three distinct options, simple stems, and the known ambiguous pairs are excluded',()=>{
+  const q=loadQuiz();q.state().banks.patho.tier=0;
+  for(const f of q.facts){const item=q.makeQuestion(f,false);assert.equal(item.options.length,3,f.id);assert(!item.stem.includes('A clinician is reviewing'));assert(!item.stem.includes('At change of shift'));}
+  for(const id of ['GI_gi_bleed__complications','PATH_GI_hernia__signs','PATH_REN_nephrotic__signs','GI_colorectal_cancer__complications']){
+    const f=q.facts.find(f=>f.id===id);
+    for(let i=0;i<20;i++) {const item=q.makeQuestion(f,false);if(id==='GI_gi_bleed__complications')assert(!item.options.filter(x=>x!==f.answer).some(x=>/hypovolemia|electrolyte|bleeding|anemia/i.test(x)));if(id==='GI_colorectal_cancer__complications')assert(!item.options.filter(x=>x!==f.answer).some(x=>/fractur|bone/i.test(x)));}
+  }
+});
+
+test('enemy-turn compatibility calls return without opening a gate or recording progress',async()=>{
+  const q=loadQuiz();const before=q.state().totalAnswers;const result=await q.runGate('defense',[]);assert.equal(result.passed,true);assert.equal(result.asked.length,0);assert.equal(q.state().totalAnswers,before);
 });
 
 test('every answer and distractor in all 687 facts has a supported option-specific explanation', () => {
@@ -285,3 +310,5 @@ test('mastered concepts rotate after 12 answers, survive reload, and a missed ch
  const f=q.facts.find(f=>f.conceptId===ids[1]);q.recordAnswer(q.makeQuestion(f,true),false);
  assert.equal(q.conceptMastered(ids[1]),false);assert.equal(b.items[f.id].dueAt,b.total+10);
 });
+
+

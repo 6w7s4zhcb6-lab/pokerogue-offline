@@ -1,4 +1,6 @@
 import { nursingFacts, type NursingFact } from "./nursing-content";
+import { buildChoices, isIdentification } from "./question-builder";
+import { renderDiseaseGuide } from "./disease-guide";
 import { explainOptions } from "./question-rationales";
 import { canOpenStudy, studyRunId } from "./battle-context";
 
@@ -96,16 +98,18 @@ export function openStudyCenter(ended = false) {
     // Use fresh subsections, avoiding the original mistaken item when repairing.
     const original = new Set(pending.map(c=>c.fact));
     pool = [...pool.filter(f=>!original.has(f.id)), ...pool.filter(f=>original.has(f.id))];
+    const identification=pool.find(isIdentification);
+    pool=identification?[identification,...pool.filter(f=>!isIdentification(f))]:pool;
     practice(pool.slice(0,5), 0, []);
   });
 }
 function practice(pool: NursingFact[], index: number, results: Attempt[]) {
   if (!overlay) return;
   if (index >= pool.length) { view(`<h2>Clinic complete</h2><p>${results.filter(a=>a.correct).length}/${results.length} correct · ${results.filter(a=>a.assisted).length} hint-assisted.</p><p>Battle mastery and difficulty were unchanged.</p><button id="ng-clinic-again" class="ng-submit">Back to study center</button>`); overlay!.querySelector("#ng-clinic-again")?.addEventListener("click",()=>{close();openStudyCenter();}); return; }
-  const f=pool[index], options=[f.answer,...f.foils.filter(x=>x!==f.answer).slice(0,3)].sort(()=>Math.random()-.5);
+  const f=pool[index], options=[f.answer,...buildChoices(f,0,3).distractors].sort(()=>Math.random()-.5);
   overlay.dataset.clinicFact = f.id;
   let assisted=false, hint=0, graded=false;
-  view(`<h2>Practice clinic · ${index+1}/${pool.length}</h2><p>${html(f.concept)} · ${html(f.subsectionName)}</p>${repairMarkup(f)}<p>${html(f.cue)} ${html(f.task)}</p><button id="ng-clinic-hint" class="ng-action">Hint 1: mechanism clue</button><p id="ng-clinic-hint-text" aria-live="polite"></p><div class="ng-answers">${options.map((o,i)=>`<button class="ng-option" data-clinic-answer="${i}">${html(o)}</button>`).join("")}</div><div id="ng-clinic-feedback" aria-live="polite"></div>`);
+  view(`<h2>Practice clinic · ${index+1}/${pool.length}</h2><p>${isIdentification(f)?"Identify the condition":html(f.concept)} · ${html(f.subsectionName)}</p>${isIdentification(f)?"":repairMarkup(f)}<p>${html(f.cue)} ${html(f.task)}</p><button id="ng-clinic-hint" class="ng-action">Hint 1: mechanism clue</button><p id="ng-clinic-hint-text" aria-live="polite"></p><div class="ng-answers">${options.map((o,i)=>`<button class="ng-option" data-clinic-answer="${i}">${html(o)}</button>`).join("")}</div><div id="ng-clinic-feedback" aria-live="polite"></div>`);
   overlay!.querySelector("#ng-clinic-hint")?.addEventListener("click",()=>{
     if (graded) return; assisted=true; hint++;
     const mechanism=nursingFacts.find(x=>x.conceptId===f.conceptId && x.subsectionId==="mechanism");
@@ -116,7 +120,7 @@ function practice(pool: NursingFact[], index: number, results: Attempt[]) {
     if(graded)return; graded=true; const selected=options[Number(b.dataset.clinicAnswer)],correct=selected===f.answer;
     recordStudyAnswer(f,[selected],correct,true,assisted); results.push({fact:f.id,correct,assisted,at:Date.now()});
     overlay!.querySelectorAll<HTMLButtonElement>("[data-clinic-answer],#ng-clinic-hint").forEach(b=>b.disabled=true);
-    overlay!.querySelector("#ng-clinic-feedback")!.innerHTML=`<div class="ng-feedback"><b>${correct?"Correct":"Incorrect"}${assisted?" · hint-assisted":" · independent"}</b>${explainOptions(f,options,[f.answer],f.why).map(e=>`<p><strong>${html(e.option)}:</strong> ${html(e.explanation)}</p>`).join("")}<button class="ng-next" id="ng-clinic-next">${index+1===pool.length?"Finish clinic":"Next question"}</button><div style="clear:both"></div></div>`;
+    overlay!.querySelector("#ng-clinic-feedback")!.innerHTML=`<div class="ng-feedback"><b>${correct?"Correct":"Incorrect"}${assisted?" · hint-assisted":" · independent"}</b>${renderDiseaseGuide(f)}${explainOptions(f,options,[f.answer],f.why).map(e=>`<p><strong>${html(e.option)}:</strong> ${html(e.explanation)}</p>`).join("")}<button class="ng-next" id="ng-clinic-next">${index+1===pool.length?"Finish clinic":"Next question"}</button><div style="clear:both"></div></div>`;
     const next=overlay!.querySelector<HTMLButtonElement>("#ng-clinic-next")!;next.addEventListener("click",()=>practice(pool,index+1,results));next.focus();
   }));
 }

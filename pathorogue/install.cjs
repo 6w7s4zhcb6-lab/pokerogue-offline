@@ -36,7 +36,7 @@ const anchors={
   imp:'import type { PostMoveInteractionAbAttrParams, PostMoveUsedAbAttrParams } from "#abilities/ab-attrs";'
 };
 for(const [k,v] of Object.entries(anchors)) assert(s.split(v).length===2,"Missing or duplicated "+k+" source anchor");
-s=s.replace(anchors.class,anchors.class+'\n  // '+marker+'\n  private pathoGateOpened = false;\n  private pathoGatePending = false;\n  private pathoGatePassed = false;\n  private pathoGateMode: "attack" | "defense" | null = null;');
+s=s.replace(anchors.class,anchors.class+'\n  // '+marker+'\n  private pathoGateOpened = false;\n  private pathoGatePending = false;\n  private pathoGatePassed = false;\n  private pathoGateMode: "attack" | null = null;');
 s=s.replace(anchors.start,[
 '  public override start(): void {',
 '    // '+marker+': ask once for a whole move, not once per hit or target.',
@@ -45,11 +45,11 @@ s=s.replace(anchors.start,[
 '      const pathoUser = this.getUserPokemon();',
 '      const pathoTargets = this.getTargets();',
 '      const againstOpponent = !!pathoUser && pathoTargets.some(t => t && t.isPlayer() !== pathoUser.isPlayer());',
-'      if (pathoUser && pathoUser.isActive(true) && againstOpponent && this.move.category !== MoveCategory.STATUS',
+'      if (pathoUser && pathoUser.isPlayer() && pathoUser.isActive(true) && againstOpponent && this.move.category !== MoveCategory.STATUS',
 '          && !isFieldTargeted(this.move) && pathoUser.turnData.hitsLeft === -1) {',
 '        this.pathoGateOpened = true;',
 '        this.pathoGatePending = true;',
-'        this.pathoGateMode = pathoUser.isPlayer() ? "attack" : "defense";',
+'        this.pathoGateMode = "attack";',
 '        void openNursingGate(this.pathoGateMode, readQuizBattleContext()).then(passed => {',
 '          this.pathoGatePassed = passed;',
 '          this.pathoGatePending = false;',
@@ -75,11 +75,8 @@ s=s.replace(anchors.nextHit,[
 ].join("\n"));
 s=s.replace(anchors.accuracy,[
 '    // '+marker+': original effectiveness/protection checks above are preserved.',
-'    if (user.isPlayer() !== target.isPlayer() && this.pathoGateMode === "attack" && !this.pathoGatePassed) {',
+'    if (user.isPlayer() && !target.isPlayer() && this.pathoGateMode === "attack" && !this.pathoGatePassed) {',
 '      return [HitCheckResult.MISS, 0];',
-'    }',
-'    if (user.isPlayer() !== target.isPlayer() && this.pathoGateMode === "defense" && !this.pathoGatePassed) {',
-'      return [HitCheckResult.HIT, effectiveness];',
 '    }',
 '    const moveAccuracy = move.calculateBattleAccuracy(user, target);'
 ].join("\n"));
@@ -111,7 +108,7 @@ capture=capture.replace(captureAnchors.start,[
 ].join("\n"));
 main=main.replace(/^(import "#app\/polyfills";[^\r\n]*\r?\n)/, '$1import { initNursingUI } from "./mods/nursing-gate"; // PATHOROGUE_UI_BOOT\n');
 main=main.replace("async function startGame(): Promise<void> {", "async function startGame(): Promise<void> {\n  initNursingUI();");
-const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","study-center.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
+const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","question-quality-data.ts","question-builder.ts","disease-guide.ts","study-center.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
 for(const name of modFiles){
   const source=path.join(__dirname,name);
   assert(fs.existsSync(source)&&fs.statSync(source).isFile()&&fs.statSync(source).size>0,"Missing or empty "+name);

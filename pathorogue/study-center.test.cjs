@@ -2,7 +2,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const {stripTypeScriptTypes}=require('node:module');
 function load(storage=new Map()){
  const c=vm.createContext({window:{localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}},canOpenStudy:()=>true,studyRunId:()=>"test-run"});
- const source=['nursing-content.ts','question-rationales.ts','study-center.ts'].map(f=>stripTypeScriptTypes(fs.readFileSync(path.join(__dirname,f),'utf8')).replace(/^import[^\n]*\n/gm,'').replace(/export /g,'')).join('\n');
+ const source=['nursing-content.ts','question-rationales.ts','question-quality-data.ts','question-builder.ts','disease-guide.ts','study-center.ts'].map(f=>stripTypeScriptTypes(fs.readFileSync(path.join(__dirname,f),'utf8')).replace(/^import[^\n]*\n/gm,'').replace(/export /g,'')).join('\n');
  vm.runInContext(source+'\nthis.api={recordStudyAnswer,repairMarkup,finishStudyRun,facts:nursingFacts,state:()=>study};',c);return c.api;
 }
 test('repeated specific wrong options trigger repair; hints cannot resolve it; two fresh subsections can',()=>{

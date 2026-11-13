@@ -106,8 +106,8 @@ async function readQuestion(cdp) {
   return evaluate(cdp, `(()=>{
     const d=document.querySelector('#ng-overlay .ng-dialog[data-mode]');if(!d)return null;
     return {mode:d.dataset.mode,concept:d.dataset.concept,subsection:d.dataset.subsection,
-      level:Number(d.dataset.level),review:d.dataset.review==='true',retention:d.dataset.retention==='true',
-      kicker:d.querySelector('.ng-kicker')?.textContent,stem:d.querySelector('h2')?.textContent,
+      level:Number(d.dataset.level),review:d.dataset.review==='true',retention:d.dataset.retention==='true',identification:d.dataset.identification==='true',
+      kicker:d.querySelector('.ng-kicker')?.textContent,stem:d.querySelector('h2')?.textContent,header:d.querySelector('.ng-detail')?.textContent,
       selectAll:d.textContent.includes('SELECT ALL THAT APPLY'),
       options:[...d.querySelectorAll('button[data-answer]')].map(b=>({index:Number(b.dataset.answer),text:b.textContent.replace(/^[A-F]\\.\\s*/,''),disabled:b.disabled})),
       rationales:[...d.querySelectorAll('button[data-rationale]')].map(b=>({index:Number(b.dataset.rationale),text:b.textContent.replace(/^\\d+\\.\\s*/,''),disabled:b.disabled})),
@@ -202,7 +202,7 @@ async function checkLayout(cdp, reportDir, width, height) {
 }
 
 function activeBall(effects, mode) {
-  return effects.balls.find(b => b.side === (mode === 'defense' ? 'enemy' : 'player'));
+  return effects.balls.find(b => b.side === 'player');
 }
 
 function assertSynchronized(effects, animationName) {
@@ -372,11 +372,17 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
       const container=document.querySelector('#ng-option-rationales'),button=document.querySelector('#ng-reveal-rationales');
       const before=container?getComputedStyle(container).display==='none'||container.hidden:null;
       if(button&&${correct})button.click();
-      return {before,hasReveal:!!button,visible:!!container&&!container.hidden&&getComputedStyle(container).display!=='none',options:[...(container?.querySelectorAll('.ng-option-rationale')||[])].map(e=>({index:Number(e.dataset.answer),correct:e.dataset.correct,text:e.textContent}))};
+      const guide=container?.querySelector('.ng-disease-guide');
+      return {before,hasReveal:!!button,visible:!!container&&!container.hidden&&getComputedStyle(container).display!=='none',options:[...(container?.querySelectorAll('.ng-option-rationale')||[])].map(e=>({index:Number(e.dataset.answer),correct:e.dataset.correct,text:e.textContent})),guide:guide?{concept:guide.dataset.guideConcept,text:guide.textContent,paragraphs:[...guide.querySelectorAll('p')].map(p=>p.textContent)}:null};
     })()`);
     assert.equal(rationaleView.options.length, question.options.length, 'Every rendered answer must have an explanation');
     assert(rationaleView.options.every(e => e.text.length > 55), 'Answer explanation is missing substantive context');
     assert.equal(rationaleView.visible, true, 'Answer explanations cannot be revealed');
+    assert(rationaleView.guide, 'Rationale panel is missing About this condition');
+    assert.equal(rationaleView.guide.concept, question.concept, 'Disease guide describes a different concept');
+    assert(rationaleView.guide.text.includes('What it is:'), 'Disease guide lacks a definition');
+    assert(rationaleView.guide.paragraphs.length >= 4 && rationaleView.guide.paragraphs.slice(1,4).every(p=>p.length>35), 'Disease guide lacks substantive definition, causes or manifestations');
+    if(effectTest) effectTest.report.diseaseGuideVerified=true;
     if (correct) {
       assert.equal(rationaleView.before, true, 'Correct-answer explanations must be optional and initially collapsed');
       assert.equal(rationaleView.hasReveal, true, 'Correct answer lacks Reveal rationales control');
@@ -472,28 +478,15 @@ async function capture(cdp, folder, name) {
 }
 
 function settleFailedMoves(report, state) {
-  for (const gate of report.gates.filter(g => g.mode !== 'capture' && g.passed === false && !g.moveOutcome)) {
+  for (const gate of report.gates.filter(g => g.mode === 'attack' && g.passed === false && !g.moveOutcome)) {
     if (!state.turn || state.turn < gate.before.turn) continue;
-    const before = gate.mode === "attack" ? gate.before.enemy : gate.before.player;
-    const after = gate.mode === "attack" ? state.enemy : state.player;
+    const before = gate.before.enemy;
+    const after = state.enemy;
     const pairs = before.map(p => ({ before: p, after: after.find(q => q.id === p.id) })).filter(p => p.after);
-    if (gate.mode === "attack") {
-      if (state.turn === gate.before.turn && state.phase === "MoveEffectPhase" && state.pathoMode === "attack") continue;
-      assert(pairs.length, "Failed attack target disappeared before damage verification");
-      assert(pairs.every(p => p.after.hp === p.before.hp), "Failed attack changed enemy HP");
-      gate.moveOutcome = "Enemy HP unchanged after failed player attack";
-    } else {
-      // The failed defense can faint the only party member; observe the HP
-      // change during native damage/faint animation instead of awaiting a
-      // command menu that will never appear after a loss.
-      if (!pairs.some(p => p.after.hp < p.before.hp)) {
-        if (state.turn > gate.before.turn && (state.mode === 2 || state.mode === 3)) {
-          assert.fail("Failed defense did not allow the enemy to damage the player");
-        }
-        continue;
-      }
-      gate.moveOutcome = "Player HP fell after failed defense";
-    }
+    if (state.turn === gate.before.turn && state.phase === "MoveEffectPhase" && state.pathoMode === "attack") continue;
+    assert(pairs.length, "Failed attack target disappeared before damage verification");
+    assert(pairs.every(p => p.after.hp === p.before.hp), "Failed attack changed enemy HP");
+    gate.moveOutcome = "Enemy HP unchanged after failed player attack";
     gate.outcomeState = state;
   }
 }
@@ -532,6 +525,18 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
     if(await evaluate(cdp, '!!document.querySelector("#ng-overlay[data-study-center] #ng-study-close")')) { await capture(cdp,reportDir,"run-debrief.png"); await evaluate(cdp, 'document.querySelector("#ng-study-close").click()'); report.debriefObserved=true; }
     const question = await readQuestion(cdp);
     const state = await snapshot(cdp, scene);
+    // Observe the original enemy MoveEffectPhase progressing without opening
+    // any question gate. A later native damage frame supplies the HP outcome.
+    if(state.phase === 'MoveEffectPhase' && state.user && state.enemy.some(p=>p.id===state.user.id)) {
+      assert.equal(question, null, 'An enemy move opened a quiz');
+      report.enemyActionObserved=true;
+      const key=`${state.wave}:${state.turn}:${state.user.id}`;
+      if(report.enemyActionKey!==key) { report.enemyActionKey=key; report.enemyActionTargets=state.player.map(p=>({id:p.id,hp:p.hp})); }
+    }
+    if(report.enemyActionTargets && state.phase === 'DamageAnimPhase') {
+      const damaged=report.enemyActionTargets.find(before=>state.player.some(after=>after.id===before.id&&after.hp<before.hp));
+      if(damaged) report.normalEnemyDamageObserved=true;
+    }
     const stateKey = JSON.stringify([state.phase, state.mode, state.options, state.partySelected, state.turn, state.wave]);
     if (stateKey !== lastStateKey) {
       report.navigation.push(state); lastStateKey = stateKey;
@@ -544,8 +549,16 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       if(question.retention)report.retentionObserved=true;
       const number = Number(match[1]);
       const required = Number(match[2]);
-      assert.equal(required, question.mode === "defense" ? 2 : 3);
+      assert(['attack','capture'].includes(question.mode), 'Only player attacks and capture attempts may open quizzes');
+      assert.equal(required, 3, 'Player attack/capture gate must require three correct answers');
       assert.equal(state.phase, question.mode === 'capture' ? 'AttemptCapturePhase' : 'MoveEffectPhase', "Quiz must originate in actual game's battle phase");
+      if(question.mode==='attack') assert(state.user && state.player.some(p=>p.id===state.user.id), 'Attack quiz belongs to an enemy move');
+      if(question.identification) {
+        const fact=bank.find(f=>f.conceptId===question.concept&&f.subsectionId===question.subsection);
+        assert.equal(number,1,'Condition-identification questions must appear first');
+        assert(fact && !question.header.includes(fact.concept), 'Identification header reveals the condition name');
+        report.identificationObserved=true;
+      }
       if (number === 1) {
         const already = report.gates.filter(g => g.mode === question.mode && g.highTier === highTier);
         let policy = already.some(g => g.passed) ? "wrong-answer" : "correct";
@@ -629,15 +642,13 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     report.animationTestPreference = 'Normal motion explicitly emulated to verify actual CSS bounce and spin animations; reduced-motion behavior has separate module regression tests.';
     await installAudioProbe(session.cdp);
     let scene = await findScene(session.cdp);
-    const basicDone = r => ["attack", "defense"].every(mode => r.gates.some(g => !g.highTier && g.mode === mode && g.passed)
-      && r.gates.some(g => !g.highTier && g.mode === mode && !g.passed && g.moveOutcome));
+    const basicDone = r => r.gates.some(g => !g.highTier && g.mode === 'attack' && g.passed)
+      && r.gates.some(g => !g.highTier && g.mode === 'attack' && !g.passed && g.moveOutcome);
     await playUntil(session.cdp, scene, bank, report, reportDir, basicDone);
     report.checks.realAttackThreeCorrect = true;
-    report.checks.realDefenseTwoCorrect = true;
     report.checks.sameConceptDistinctSubsections = true;
     report.checks.wrongAnswerFailsGate = true;
     report.checks.failedAttackDealsNoDamage = true;
-    report.checks.failedDefenseAllowsEnemyDamage = true;
     await playUntil(session.cdp, scene, bank, report, reportDir,
       r => r.gates.some(g => g.mode === 'capture' && g.passed && g.moveOutcome)
         && r.gates.some(g => g.mode === 'capture' && !g.passed && g.moveOutcome)
@@ -665,7 +676,8 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
 
     // Import a valid mastered concept into the disposable profile to exercise
     // the actual retention scheduler without hundreds of warm-up answers.
-    const retentionFacts=bank.filter(f=>f.conceptId===bank[0].conceptId);
+    const retentionFacts=bank.filter(f=>f.conceptId==='GI_gi_bleed');
+    assert(retentionFacts.some(f=>f.answer===f.concept),'Retention fixture needs a real condition-identification item');
     await evaluate(session.cdp, '(function(ids){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));if(s.banks.patho.total<12)throw Error("Insufficient retention test answers");for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:3,dueAt:0,mastered:true};s.banks.patho.retentionAt=s.banks.patho.total-12;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+')');
     await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.retentionObserved);
@@ -685,11 +697,18 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
       synchronizedBallAnimations: true, movingTwinklingStars: report.starMotion === true,
       currentHealthAndSixPartySlots: !!report.battleHUD,
       optionalAllAnswerRationales: report.optionRationalesVerified === true,
+      aboutConditionDefinitionCausesAndManifestations: report.diseaseGuideVerified === true,
       wideAndNarrowQuizLayout: true, quizEffectsCleanedUp: true });
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.debriefObserved,{timeout:240000});
     const study=await evaluate(session.cdp,'JSON.parse(localStorage.getItem("pokerogue.study-center.v1"))');
     assert(study.runs.at(-1)?.attempts.length>0,"End-of-run debrief has no actual battle records");
     report.checks.realEndOfRunStudyDebrief=true;
+    assert(report.enemyActionObserved && report.normalEnemyDamageObserved, 'Native enemy moves/damage were not observed without a quiz');
+    assert(report.gates.every(g=>g.mode==='attack'||g.mode==='capture'), 'An enemy-defense gate was recorded');
+    assert(report.diseaseGuideVerified,'About this condition was not tested after revealing rationales');
+    assert(report.identificationObserved,'No first-position condition-identification question was observed');
+    report.checks.enemyTurnsProceedWithoutQuestions=true;
+    report.checks.identificationFirstWithHiddenConditionHeader=true;
     await capture(session.cdp, reportDir, "gameplay-completed.png");
     report.finalProgress = await evaluate(session.cdp, `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}))`);
     report.exceptions = session.cdp.events.filter(e => e.method === "Runtime.exceptionThrown");

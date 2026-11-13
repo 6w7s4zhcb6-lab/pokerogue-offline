@@ -25,8 +25,8 @@ function clinicalReason(fact: NursingFact, supplied = fact.why): string {
     ? `Pathophysiology: ${pathophysiology} ${supplied}` : supplied;
 }
 function correspondingFact(option: string, fact: NursingFact): NursingFact | undefined {
-  const matches = (options.get(normalize(option)) || []).filter(item => item.conceptId !== fact.conceptId);
-  return matches.find(item => item.subsectionId === fact.subsectionId)
+  const matches = (options.get(normalize(option)) || []).filter(item => item.id !== fact.id);
+  return matches.find(item => item.conceptId !== fact.conceptId && item.subsectionId === fact.subsectionId)
     || matches.find(item => item.subsectionId === "mechanism") || matches[0];
 }
 export function explainOptions(fact: NursingFact, renderedOptions: readonly string[], answers: readonly string[], rationale: string): OptionRationale[] {

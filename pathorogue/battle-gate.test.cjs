@@ -112,7 +112,7 @@ test("the tracker is initialized from game startup, after polyfills", () => {
   assert.match(main, /async function startGame\(\): Promise<void> \{\s+initNursingUI\(\);/);
 });
 
-for (const [player, mode] of [[true, "attack"], [false, "defense"]]) {
+for (const [player, mode] of [[true, "attack"]]) {
   test(`${mode} suspends the actual phase until its question gate resolves`, async () => {
     const h = harness(player);
     h.phase.start();
@@ -138,11 +138,24 @@ test("a wrong attack answer forces a miss before native accuracy", async () => {
   assert.equal(h.stats.accuracy, 0);
 });
 
-test("a wrong defense answer bypasses enemy accuracy", async () => {
+test("enemy attacks run immediately without opening any question gate", () => {
   const h = harness(false, false);
-  h.phase.start(); await h.settle();
-  h.move.calculateBattleAccuracy = () => { throw Error("Accuracy should be bypassed"); };
+  h.phase.start();
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.stats.starts, 1);
+  assert.equal(h.stats.completed, 1);
+  assert.equal(h.phase.pathoGateMode, null);
+});
+
+test("enemy attacks preserve native accuracy and never gain an automatic hit", () => {
+  const h = harness(false, false);
+  h.phase.start();
   assert.equal(h.phase.hitCheck(h.target)[0], "HIT");
+  assert.equal(h.stats.accuracy, 1);
+  h.move.calculateBattleAccuracy = () => { h.stats.accuracy++; return 0; };
+  assert.equal(h.phase.hitCheck(h.target)[0], "MISS");
+  assert.equal(h.stats.accuracy, 2);
+  assert.deepEqual(h.calls, []);
 });
 
 test("correct answers preserve the game's native accuracy roll", async () => {
@@ -154,13 +167,14 @@ test("correct answers preserve the game's native accuracy roll", async () => {
   assert.equal(h.phase.hitCheck(h.target)[0], "MISS");
 });
 
-test("immunity and protection remain effective even after a failed defense", async () => {
+test("enemy attacks preserve native immunity and protection without a quiz", () => {
   const h = harness(false, false);
-  h.phase.start(); await h.settle();
+  h.phase.start();
   h.target.getMoveEffectiveness = () => 0;
   assert.equal(h.phase.hitCheck(h.target)[0], "NO_EFFECT");
   h.phase.protectedCheck = () => true;
   assert.equal(h.phase.hitCheck(h.target)[0], "PROTECTED");
+  assert.deepEqual(h.calls, []);
 });
 
 test("spread-move quiz results do not alter same-side hit checks", async () => {
@@ -185,9 +199,9 @@ test("later strikes and status moves do not open additional gates", () => {
   assert.equal(status.stats.completed, 1);
 });
 
-for (const player of [true, false]) {
+for (const player of [true]) {
   for (const passed of [true, false]) {
-    test(`${player ? "attack" : "defense"} ${passed ? "passed" : "failed"} verdict carries through CHECK_ALL_HITS without repeating the quiz`, async () => {
+    test(`attack ${passed ? "passed" : "failed"} verdict carries through CHECK_ALL_HITS without repeating the quiz`, async () => {
       const h = harness(player, passed);
       h.phase.start(); await h.settle();
       h.user.turnData.hitCount = 3;
@@ -203,11 +217,34 @@ for (const player of [true, false]) {
       next.postAnimCallback = h.phase.postAnimCallback;
       next.start();
       assert.equal(h.calls.length, 1);
-      assert.equal(next.pathoGateMode, player ? "attack" : "defense");
+      assert.equal(next.pathoGateMode, "attack");
       assert.equal(next.pathoGatePassed, passed);
-      assert.equal(next.hitCheck(h.target)[0], !player && !passed ? "HIT" : "MISS");
+      assert.equal(next.hitCheck(h.target)[0], "MISS");
     });
   }
+}
+
+for (const accuracy of [0, 100]) {
+  test(`enemy CHECK_ALL_HITS continuation uses native ${accuracy}% accuracy without questions`, () => {
+    const h = harness(false, false);
+    h.phase.start();
+    h.user.turnData.hitCount = 3;
+    h.user.turnData.hitsLeft = 2;
+    h.move.hasFlag = flag => flag === "CHECK_ALL_HITS";
+    h.move.calculateBattleAccuracy = () => { h.stats.accuracy++; return accuracy; };
+    h.phase.addNextHitPhase();
+    assert.equal(h.queued.length, 1);
+    const next = h.queued[0];
+    next.checkBypassAccAndInvuln = () => false;
+    next.protectedCheck = () => false;
+    next.conductHitChecks = h.phase.conductHitChecks;
+    next.postAnimCallback = h.phase.postAnimCallback;
+    next.start();
+    assert.deepEqual(h.calls, []);
+    assert.equal(next.pathoGateMode, null);
+    assert.equal(next.hitCheck(h.target)[0], accuracy ? "HIT" : "MISS");
+    assert.equal(h.stats.accuracy, 1);
+  });
 }
 
 test("a spread move hitting an ally cannot bypass a failed attack quiz on later enemy strikes", async () => {
