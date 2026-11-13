@@ -1,4 +1,5 @@
 import { globalScene } from "#app/global-scene";
+export function studyRunId(): string { try { return globalScene.seed || ""; } catch { return ""; } }
 
 export type QuizPokemon = {
   id: string | number;
@@ -55,3 +56,5 @@ export function readQuizBattleContext(): QuizBattleContext {
     return { player: [], enemy: [] };
   }
 }
+
+export function canOpenStudy(): boolean { try { return ["TitlePhase", "CommandPhase"].includes(globalScene.phaseManager.getCurrentPhase()?.phaseName); } catch { return false; } }

@@ -104,7 +104,7 @@ async function chooseOption(cdp, scene, pattern) {
 
 async function readQuestion(cdp) {
   return evaluate(cdp, `(()=>{
-    const d=document.querySelector('#ng-overlay .ng-dialog');if(!d)return null;
+    const d=document.querySelector('#ng-overlay .ng-dialog[data-mode]');if(!d)return null;
     return {mode:d.dataset.mode,concept:d.dataset.concept,subsection:d.dataset.subsection,
       level:Number(d.dataset.level),review:d.dataset.review==='true',
       kicker:d.querySelector('.ng-kicker')?.textContent,stem:d.querySelector('h2')?.textContent,
@@ -439,6 +439,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
 
 async function advanceMenus(cdp, scene, state, { captureAttempt = false } = {}) {
   // Read menu labels, then send ordinary keys to the same handlers as a player.
+  if(state.phase === "GameOverPhase" && state.mode === 14) { if(!await chooseOption(cdp,scene,/^no$/i)) { await key(cdp,"ArrowDown");await key(cdp,"Space"); } return; }
   if (state.mode === 1) {
     if (!await chooseOption(cdp, scene, /^continue$/i)) await chooseOption(cdp, scene, /^new game$/i);
   } else if (state.mode === 15 || state.mode === 17) {
@@ -497,11 +498,38 @@ function settleFailedMoves(report, state) {
   }
 }
 
+
+async function verifyStudyClinic(cdp, bank, reportDir) {
+ const before=await evaluate(cdp, 'localStorage.getItem("pokerogue.pathophysiology-gate.v3")');
+ await evaluate(cdp, 'document.querySelector("#ng-study-launcher").click()');
+ assert(await evaluate(cdp, '!!document.querySelector("#ng-clinic-start")'), 'Study clinic did not open at command menu');
+ await capture(cdp,reportDir,'study-center.png');
+ await evaluate(cdp, 'document.querySelector("#ng-clinic-start").click()');
+ for(let i=0;i<5;i++) {
+  const prompt=await evaluate(cdp, '({fact:document.querySelector("#ng-overlay").dataset.clinicFact,options:[...document.querySelectorAll("[data-clinic-answer]")].map(b=>({i:b.dataset.clinicAnswer,text:b.textContent}))})');
+  const f=bank.find(f=>f.id===prompt.fact);assert(f,'Unknown clinic fact');
+  if(i===0)await evaluate(cdp, 'document.querySelector("#ng-clinic-hint").click()');
+  const option=prompt.options.find(o=>o.text===f.answer);assert(option,'Correct clinic option missing');
+  await clickIndex(cdp,"data-clinic-answer",Number(option.i));
+  assert(await evaluate(cdp, '!!document.querySelector("#ng-clinic-next")'), 'Clinic feedback missing');
+  if(i===0)await capture(cdp,reportDir,'clinic-hint-feedback.png');
+  await evaluate(cdp, 'document.querySelector("#ng-clinic-next").click()');
+ }
+ assert(await evaluate(cdp, 'document.querySelector("#ng-overlay").textContent.includes("Clinic complete")'), 'Clinic did not finish');
+ await capture(cdp,reportDir,'clinic-completed.png');
+ await evaluate(cdp, 'document.querySelector("#ng-study-close").click()');
+ assert.equal(await evaluate(cdp, 'localStorage.getItem("pokerogue.pathophysiology-gate.v3")'),before,'Clinic changed battle mastery');
+ const ledger=await evaluate(cdp,'JSON.parse(localStorage.getItem("pokerogue.study-center.v1"))');
+ assert.equal(ledger.clinic.length,5);assert.equal(ledger.clinic.filter(a=>a.assisted).length,1);
+ return true;
+}
+
 async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highTier = false, captureTest = false, timeout = 240000 } = {}) {
   const deadline = Date.now() + timeout;
   let active = null;
   let lastStateKey = "";
   while (Date.now() < deadline) {
+    if(await evaluate(cdp, '!!document.querySelector("#ng-overlay[data-study-center] #ng-study-close")')) { await capture(cdp,reportDir,"run-debrief.png"); await evaluate(cdp, 'document.querySelector("#ng-study-close").click()'); report.debriefObserved=true; }
     const question = await readQuestion(cdp);
     const state = await snapshot(cdp, scene);
     const stateKey = JSON.stringify([state.phase, state.mode, state.options, state.partySelected, state.turn, state.wave]);
@@ -578,6 +606,7 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       assert.equal(visibility.hud, 0, 'Battle HUD remains outside the quiz');
       settleFailedMoves(report, state);
       if (predicate(report)) return;
+      if(!report.clinicVerified && state.phase === "CommandPhase" && state.mode === 2) report.clinicVerified=await verifyStudyClinic(cdp,bank,reportDir);
       await advanceMenus(cdp, scene, state, { captureAttempt: captureTest && state.enemy.filter(p => p.hp > 0).length === 1 && !report.gates.some(g => g.mode === 'capture' && g.passed) });
       await delay(300);
     }
@@ -641,10 +670,15 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     Object.assign(report.checks, { quizEffectsOnlyDuringOverlay: true, threeDistinctChangingStars: true,
       wrongAnswersTurnStarsRed: true, correctAnswersProduceConfettiAndSynchronizedBounce: true,
       completedGatesSpinBeforeBattleResumes: true, distinctCorrectAndWrongAudio: true,
+      practiceClinicHintsAndIsolation: report.clinicVerified === true,
       synchronizedBallAnimations: true, movingTwinklingStars: report.starMotion === true,
       currentHealthAndSixPartySlots: !!report.battleHUD,
       optionalAllAnswerRationales: report.optionRationalesVerified === true,
       wideAndNarrowQuizLayout: true, quizEffectsCleanedUp: true });
+    await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.debriefObserved,{timeout:240000});
+    const study=await evaluate(session.cdp,'JSON.parse(localStorage.getItem("pokerogue.study-center.v1"))');
+    assert(study.runs.at(-1)?.attempts.length>0,"End-of-run debrief has no actual battle records");
+    report.checks.realEndOfRunStudyDebrief=true;
     await capture(session.cdp, reportDir, "gameplay-completed.png");
     report.finalProgress = await evaluate(session.cdp, `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}))`);
     report.exceptions = session.cdp.events.filter(e => e.method === "Runtime.exceptionThrown");
@@ -671,3 +705,4 @@ if (require.main === module) {
     .then(session => verifyGameplay(exe, path.resolve(args.includes("--report-dir") ? at("--report-dir") : "verification"), session))
     .catch(error => { console.error(error); process.exitCode = 1; });
 }
+

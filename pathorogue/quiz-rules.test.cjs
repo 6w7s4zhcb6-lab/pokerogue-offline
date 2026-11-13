@@ -12,6 +12,7 @@ function loadQuiz() {
   const context = vm.createContext({
     console,
     window: { localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) } },
+    recordStudyAnswer() {}, repairMarkup: () => "", initStudyLauncher() {},
     createQuizEffects: () => ({ showQuestion() {}, answer() {}, settled() {}, dispose() {} }),
     createQuizBattleHUD: () => ({ dispose() {} }),
   });
@@ -22,6 +23,7 @@ function loadQuiz() {
   const quiz = stripTypeScriptTypes(fs.readFileSync(path.join(folder, 'nursing-gate.ts'), 'utf8'))
     .replace(/^import .*nursing-content.*;\r?\n/m, '')
     .replace(/^import .*quiz-effects.*;\r?\n/m, '')
+    .replace(/^import .*study-center.*;\r?\n/m, '')
     .replace(/^import .*quiz-battle-hud.*;\r?\n/m, '')
     .replace(/^import .*question-rationales.*;\r?\n/m, '')
     .replace(/export /g, '');
@@ -35,7 +37,7 @@ function loadQuiz() {
     runGate: async (mode, responses) => {
       hud = { querySelectorAll: () => [], querySelector: () => null, innerHTML: '' };
       this.document = {
-        addEventListener() {}, removeEventListener() {},
+        getElementById() { return null; }, addEventListener() {}, removeEventListener() {},
         createElement: () => ({ setAttribute() {}, appendChild() {}, remove() {} }),
         body: { appendChild() {} },
       };
@@ -271,3 +273,4 @@ test('keyboard reveal toggles with Enter/Space, Tab stays in the modal and ordin
   press('Tab', true); assert.equal(doc.activeElement, proceed);
   press('2'); assert.equal(clicks.answer, 1);
 });
+

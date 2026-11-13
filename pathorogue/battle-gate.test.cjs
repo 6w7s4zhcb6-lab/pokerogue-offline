@@ -333,7 +333,7 @@ test("a target gone before or during the capture check consumes no ball", async 
 
 test("battle snapshot uses real loaded atlas icons, native HP and up to six party slots", () => {
   const contextSource = stripTypeScriptTypes(fs.readFileSync(path.join(__dirname, "battle-context.ts"), "utf8"), { mode: "strip" })
-    .replace(/^import[^\n]+\r?\n/m, "").replace("export function readQuizBattleContext", "function readQuizBattleContext");
+    .replace(/^import[^\n]+\r?\n/m, "").replace(/export function /g, "function ");
   let images = 0;
   const pokemon = (id, active, hp = 10) => ({
     id, hp, name: "Fallback", getNameToRender: () => `Pokémon ${id}`,

@@ -5,6 +5,9 @@ const root=path.resolve(process.argv[2]||"pokerogue-src");
 const file=path.join(root,"src/phases/move-effect-phase.ts");
 const mainFile=path.join(root,"src/main.ts");
 const captureFile=path.join(root,"src/phases/attempt-capture-phase.ts");
+const overFile=path.join(root,"src/phases/game-over-phase.ts");
+let over=fs.existsSync(overFile)?fs.readFileSync(overFile,"utf8"):null;
+if(over!==null){assert(!over.includes("PATHOROGUE_RUN_DEBRIEF"),"Debrief already patched");assert(over.split("  handleGameOver(): void {").length===2,"Missing game over anchor");over='import { finishStudyRun } from "../mods/study-center"; // PATHOROGUE_RUN_DEBRIEF\n'+over;over=over.replace("  handleGameOver(): void {","  handleGameOver(): void {\n    finishStudyRun(this.isVictory);");}
 const md=path.join(root,"src/mods");
 const marker="PATHOROGUE_SUBSECTION_GATE_V1";
 function assert(b,msg){if(!b)throw new Error("PathoRogue install: "+msg)}
@@ -108,7 +111,7 @@ capture=capture.replace(captureAnchors.start,[
 ].join("\n"));
 main=main.replace(/^(import "#app\/polyfills";[^\r\n]*\r?\n)/, '$1import { initNursingUI } from "./mods/nursing-gate"; // PATHOROGUE_UI_BOOT\n');
 main=main.replace("async function startGame(): Promise<void> {", "async function startGame(): Promise<void> {\n  initNursingUI();");
-const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
+const modFiles=["nursing-gate.ts","nursing-content.ts","question-rationales.ts","study-center.ts","quiz-effects.ts","battle-context.ts","quiz-battle-hud.ts","quiz-ball.png","quiz-stars.png"];
 for(const name of modFiles){
   const source=path.join(__dirname,name);
   assert(fs.existsSync(source)&&fs.statSync(source).isFile()&&fs.statSync(source).size>0,"Missing or empty "+name);
@@ -119,4 +122,5 @@ for(const name of modFiles)fs.copyFileSync(path.join(__dirname,name),path.join(m
 fs.writeFileSync(file,s);
 fs.writeFileSync(mainFile,main);
 fs.writeFileSync(captureFile,capture);
+if(over!==null)fs.writeFileSync(overFile,over);
 console.log("PathoRogue question gate patched into original PokéRogue.");

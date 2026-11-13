@@ -6,6 +6,7 @@
  */
 import { nursingFacts, type NursingFact } from "./nursing-content";
 import { createQuizEffects } from "./quiz-effects";
+import { recordStudyAnswer, repairMarkup, initStudyLauncher } from "./study-center";
 import { createQuizBattleHUD } from "./quiz-battle-hud";
 import type { QuizBattleContext } from "./battle-context";
 import { explainOptions, explainRationaleOptions } from "./question-rationales";
@@ -385,6 +386,7 @@ export function initNursingUI() {
   if (typeof document === "undefined" || !document.body || hud) return;
   const css = document.createElement("style"); css.id = "ng-style"; css.textContent = style; document.head.appendChild(css);
   hud = document.createElement("div"); hud.id = "ng-hud"; document.body.appendChild(hud);
+  initStudyLauncher();
   renderHUD();
 }
 function renderHUD() {
@@ -490,7 +492,7 @@ function blockGameplayKeys(event: KeyboardEvent) {
 export async function openNursingGate(mode: Gate, context?: QuizBattleContext): Promise<boolean> {
   if (typeof document === "undefined") return false;
   initNursingUI();
-  if (activeGate) return false;
+  if (activeGate || document.getElementById("ng-overlay")) return false;
   activeGate = true;
   const required = mode === "defense" ? 2 : 3;
   prepared = prepared.filter(q => q.fact.bank === state.selected && q.level === state.banks[state.selected].tier);
@@ -559,6 +561,7 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
       answered = true;
       const correct = selectedOptions.size === q.answers.length && q.answers.every(answer => selectedOptions.has(answer))
         && (!q.rationaleOptions.length || selectedRationale === q.rationale);
+      recordStudyAnswer(q.fact, [...selectedOptions], correct);
       quizEffects?.answer(correct, correct && number === required);
       shade?.querySelectorAll<HTMLButtonElement>("button[data-rationale]").forEach(button => {
         button.disabled = true;
@@ -576,7 +579,7 @@ function askQuestion(q: PreparedQuestion, number: number, required: number, mode
       const submit = shade?.querySelector<HTMLButtonElement>("#ng-submit");
       if (submit) submit.disabled = true;
       const response = shade?.querySelector<HTMLElement>("#ng-response");
-      if (response) response.innerHTML = renderAnswerFeedback(q, correct, number, required, mode);
+      if (response) response.innerHTML = renderAnswerFeedback(q, correct, number, required, mode) + repairMarkup(q.fact);
       shade?.querySelector("#ng-reveal-rationales")?.addEventListener("click", event => {
         const button = event.currentTarget as HTMLButtonElement;
         const details = shade?.querySelector<HTMLElement>("#ng-option-rationales");
