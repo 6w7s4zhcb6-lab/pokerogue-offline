@@ -106,7 +106,7 @@ async function readQuestion(cdp) {
   return evaluate(cdp, `(()=>{
     const d=document.querySelector('#ng-overlay .ng-dialog[data-mode]');if(!d)return null;
     return {mode:d.dataset.mode,concept:d.dataset.concept,subsection:d.dataset.subsection,
-      level:Number(d.dataset.level),review:d.dataset.review==='true',
+      level:Number(d.dataset.level),review:d.dataset.review==='true',retention:d.dataset.retention==='true',
       kicker:d.querySelector('.ng-kicker')?.textContent,stem:d.querySelector('h2')?.textContent,
       selectAll:d.textContent.includes('SELECT ALL THAT APPLY'),
       options:[...d.querySelectorAll('button[data-answer]')].map(b=>({index:Number(b.dataset.answer),text:b.textContent.replace(/^[A-F]\\.\\s*/,''),disabled:b.disabled})),
@@ -541,6 +541,7 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       if (highTier) assert(question.level >= 6, "Persisted advanced difficulty was not restored");
       const match = question.kicker.match(/Question (\d+) of (\d+)/);
       assert(match, `Quiz counter missing: ${question.kicker}`);
+      if(question.retention)report.retentionObserved=true;
       const number = Number(match[1]);
       const required = Number(match[2]);
       assert.equal(required, question.mode === "defense" ? 2 : 3);
@@ -661,6 +662,16 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     await playUntil(session.cdp, scene, bank, report, reportDir,
       r => r.gates.some(g => g.highTier && g.passed) && r.gates.some(g => g.highTier && g.policy === "wrong-rationale" && !g.passed), { highTier: true });
     report.checks.highTierRequiresCorrectRationale = true;
+
+    // Import a valid mastered concept into the disposable profile to exercise
+    // the actual retention scheduler without hundreds of warm-up answers.
+    const retentionFacts=bank.filter(f=>f.conceptId===bank[0].conceptId);
+    await evaluate(session.cdp, '(function(ids){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));if(s.banks.patho.total<12)throw Error("Insufficient retention test answers");for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:3,dueAt:0,mastered:true};s.banks.patho.retentionAt=s.banks.patho.total-12;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+')');
+    await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);
+    await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.retentionObserved);
+    assert(report.retentionObserved,'Mastered concept was not retested at twelve answers');
+    report.checks.masteredConceptRetentionEveryTwelve=true;
+
     const allQuestions = report.gates.flatMap(g => g.questions);
     const correctSound = allQuestions.find(q => q.correct && q.effects?.audio.length)?.effects.audio;
     const wrongSound = allQuestions.find(q => !q.correct && q.effects?.audio.length)?.effects.audio;

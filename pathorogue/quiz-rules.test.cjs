@@ -31,7 +31,7 @@ function loadQuiz() {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
-    normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
+    retentionConcept, normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
     explainOptions, explainRationaleOptions, renderAnswerFeedback,
     keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
@@ -274,3 +274,14 @@ test('keyboard reveal toggles with Enter/Space, Tab stays in the modal and ordin
   press('2'); assert.equal(clicks.answer, 1);
 });
 
+
+test('mastered concepts rotate after 12 answers, survive reload, and a missed check revokes subsection mastery',()=>{
+ const q=loadQuiz();const ids=[...new Set(q.facts.map(f=>f.conceptId))].sort().slice(0,2);const b=q.state().banks.patho;
+ b.total=100;for(const f of q.facts.filter(f=>ids.includes(f.conceptId)))b.items[f.id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:0,dueAt:0,mastered:true};
+ b.retentionAt=100;b.total=111;assert.equal(q.retentionConcept(),null);
+ b.total=112;assert.equal(q.retentionConcept(),ids[0]);assert.equal(q.retentionConcept(),null);
+ const restored=q.normalizeState(JSON.parse(JSON.stringify(q.state())));assert.equal(restored.banks.patho.retentionAt,112);
+ b.total=124;assert.equal(q.retentionConcept(),ids[1]);
+ const f=q.facts.find(f=>f.conceptId===ids[1]);q.recordAnswer(q.makeQuestion(f,true),false);
+ assert.equal(q.conceptMastered(ids[1]),false);assert.equal(b.items[f.id].dueAt,b.total+10);
+});
