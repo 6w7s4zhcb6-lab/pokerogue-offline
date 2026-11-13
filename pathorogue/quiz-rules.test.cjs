@@ -237,6 +237,19 @@ test('correct feedback keeps all rationales collapsed, wrong feedback automatica
   assert.equal(explanations.find(item => item.correct).explanation, expert.expert.why);
 });
 
+test('shared distractor definitions are contrasted with the current scenario without leaking another scenario', () => {
+  const quiz = loadQuiz();
+  const diarrhea = quiz.facts.find(f => f.id === 'PATH_GI_diarrhea');
+  const respiratory = quiz.explainOptions(diarrhea, ['Respiratory acidosis'], [diarrhea.answer], diarrhea.why)[0];
+  assert(respiratory.explanation.includes('carbon dioxide'));
+  assert(respiratory.explanation.includes('bicarbonate'));
+  assert(!respiratory.explanation.includes('vomiting'));
+  const adh = quiz.facts.find(f => f.id === 'PATH_REN_ADH');
+  const epo = quiz.explainOptions(adh, ['Erythropoietin'], [adh.answer], adh.why)[0];
+  assert(epo.explanation.includes('red-cell'));
+  assert(!epo.explanation.includes('hepatic'));
+});
+
 test('keyboard reveal toggles with Enter/Space, Tab stays in the modal and ordinary Enter continues', () => {
   const quiz = loadQuiz(), clicks = { reveal: 0, continue: 0, answer: 0 }, doc = {};
   const button = (id, action) => ({ id, hidden: false, closest: () => null, getClientRects: () => [{}], focus() { doc.activeElement = this; }, click: action });

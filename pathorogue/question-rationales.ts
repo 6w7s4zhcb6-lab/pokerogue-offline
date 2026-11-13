@@ -38,7 +38,7 @@ export function explainOptions(fact: NursingFact, renderedOptions: readonly stri
     const other = correspondingFact(option, fact);
     if (other) return {
       option, correct,
-      explanation: `This describes ${other.concept.toLowerCase()} (${other.subsectionName.toLowerCase()}): ${clinicalReason(other)} In this question, the distinction is ${clinicalReason(fact, rationale)}`,
+      explanation: `For ${other.concept} (${other.subsectionName}), the comparison pattern is: ${clinicalReason(other)} This question concerns ${fact.concept}: ${clinicalReason(fact, rationale)}`,
       source: `${fact.source}; comparison: ${other.source}`, coverage: "bank",
     };
     // The build's coverage test rejects this branch before publishing. Keeping
@@ -52,7 +52,7 @@ export function explainRationaleOptions(fact: NursingFact, choices: readonly str
     const other = nursingFacts.find(candidate => candidate.why === option);
     return {
       option, correct: false,
-      explanation: other ? `This explanation concerns ${other.concept.toLowerCase()}: ${mechanism(other)} The question instead concerns ${fact.concept.toLowerCase()}: ${mechanism(fact)}`
+      explanation: other ? `This explanation concerns ${other.concept}: ${mechanism(other)} The question instead concerns ${fact.concept}: ${mechanism(fact)}`
         : `The supported mechanism in this scenario is ${clinicalReason(fact, correctRationale)}`,
       source: other ? `${other.source}; scenario: ${fact.source}` : fact.source, coverage: other ? "bank" : "unmapped",
     };
