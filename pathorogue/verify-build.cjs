@@ -45,7 +45,7 @@ function verifyDist(root) {
   for (const text of ["ng-hud", "ng-overlay", "ng-battle-hud", "ng-option-rationales", "ng-star-twinkle", "MASTERY TRACKER", "Rationale:", "SCHEDULED MASTERY REVIEW", "pokerogue.pathophysiology-gate.v3"]) {
     assert(built.includes(text), `PathoRogue runtime missing from compiled output: ${text}`);
   }
-  for(const text of ["Which healing stage is occurring?", "solid pancreatic-head lesion", "Identify the treatment", "What it is:"]) {
+  for(const text of ["Which healing stage is occurring?", "solid pancreatic-head lesion", "Identify the treatment", "What it is:", "Missing fresh review cases", "EVERY 30 ANSWERS"]) {
     assert(built.includes(text), `Authored clinical question update missing from compiled output: ${text}`);
   }
   return { entry: manifest.js, javascriptChunks: scripts.length, pathophysiologyRuntimePresent: true };
@@ -176,6 +176,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
     assert(tracker.includes("687"), "687-subsection tracker is missing");
     assert(tracker.includes("96"), "96-concept tracker is missing");
     assert(tracker.includes("1/10"), "10-tier difficulty tracker is missing");
+    assert(tracker.includes("Every 30 answers"), "Mastered-concept review interval is not 30 answers");
     const shot = await session.cdp.send("Page.captureScreenshot", { format: "png" });
     await fsp.writeFile(path.join(reportDir, "packaged-exe-tracker.png"), Buffer.from(shot.data, "base64"));
     const report = {
@@ -185,7 +186,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
       unbundledAppPath: session.appPath,
       sha256: await hashFile(exe),
       offline: { externalDNSBlocked: true, rendererHTTPBlocked: true, loadedURL: url },
-      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true, effectsAbsentOutsideQuiz: true },
+      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true, masteryReviewThirty: true, effectsAbsentOutsideQuiz: true },
       scope: session.appPath
         ? "Unbundled Electron diagnostic launch; this does not verify the downloadable portable EXE."
         : "Packaged portable EXE startup and tracker smoke test; battle enforcement requires separate battle verification.",

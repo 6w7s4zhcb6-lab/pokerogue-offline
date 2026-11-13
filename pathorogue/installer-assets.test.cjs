@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { test, after } = require("node:test");
-const files = ["nursing-gate.ts", "nursing-content.ts", "question-rationales.ts","clinical-types.ts","clinical-bank.ts","clinical-gi.ts","clinical-renal.ts","clinical-renal-advanced-a.ts","clinical-renal-advanced-b.ts","clinical-msk.ts","question-builder.ts","disease-guide.ts", "study-center.ts", "quiz-effects.ts", "battle-context.ts", "quiz-battle-hud.ts", "quiz-ball.png", "quiz-stars.png"];
+const files = ["nursing-gate.ts", "nursing-content.ts", "question-rationales.ts","clinical-types.ts","clinical-review-bank.ts","clinical-review-gi.ts","clinical-review-renal.ts","clinical-review-msk.ts","clinical-bank.ts","clinical-gi.ts","clinical-renal.ts","clinical-renal-advanced-a.ts","clinical-renal-advanced-b.ts","clinical-msk.ts","question-builder.ts","disease-guide.ts", "study-center.ts", "quiz-effects.ts", "battle-context.ts", "quiz-battle-hud.ts", "quiz-ball.png", "quiz-stars.png"];
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pathorogue-install-assets-"));
 assert(path.resolve(workspace).startsWith(path.resolve(os.tmpdir()) + path.sep));
 after(() => fs.rmSync(workspace, { recursive: true, force: true }));

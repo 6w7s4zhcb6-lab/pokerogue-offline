@@ -11,6 +11,8 @@ function loadClinicalContext(globals={}) {
  load("clinical-gi.ts",["giCases"]);load("clinical-renal.ts",["renalCases"]);load("clinical-msk.ts",["mskCases"]);
  load("clinical-renal-advanced-a.ts",["renalAdvancedA"]);load("clinical-renal-advanced-b.ts",["renalAdvancedB"]);
  load("clinical-bank.ts",["clinicalCases","getClinicalCase","validateClinicalBank"]);
+ load("clinical-review-gi.ts",["giReviewVariants"]);load("clinical-review-renal.ts",["renalReviewVariants"]);load("clinical-review-msk.ts",["mskReviewVariants"]);
+ load("clinical-review-bank.ts",["reviewVariants","caseVariants","validateReviewBank"]);
  load("question-builder.ts",["CLINICAL_DIFFICULTY","isIdentification","identificationLabel","buildChoices","clinicalExplanation"]);
  return {context,load};
 }

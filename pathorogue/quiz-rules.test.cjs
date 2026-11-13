@@ -21,7 +21,7 @@ function loadQuiz() {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
-    retentionConcept, normalizeState, makeQuestion, takeQuestion, recordAnswer, conceptMastered, readState,
+    retentionConcept, normalizeState, makeQuestion, takeQuestion, planGate, rememberCase, recordAnswer, conceptMastered, readState,
     explainOptions, explainRationaleOptions, renderAnswerFeedback, buildChoices,isIdentification,getClinicalCase,
     keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
@@ -33,7 +33,7 @@ function loadQuiz() {
       };
       const asked = [];
       askQuestion = async (q, number, required, kind) => {
-        asked.push({ id: q.fact.id, concept: q.fact.conceptId, subsection: q.fact.subsectionId, number, required, kind });
+        asked.push({ id: q.fact.id, concept: q.fact.conceptId, subsection: q.fact.subsectionId, caseId:q.caseId,stem:q.stem,isReview:q.isReview, number, required, kind });
         return responses.shift();
       };
       const passed = await openNursingGate(mode);
@@ -180,6 +180,37 @@ test('identification questions come first and never appear later in a gate', asy
   }
 });
 
+test('a due subsection does not force a mastered identification question back into the gate',async()=>{
+ const q=loadQuiz(),core=q.facts.find(f=>f.id==='PATH_GI_vomit'),risk=q.facts.find(f=>f.id==='PATH_GI_vomit__risk');
+ q.recordAnswer(q.makeQuestion(core,false),true);q.recordAnswer(q.makeQuestion(risk,false),false);
+ const bank=q.state().banks.patho,item=bank.items[risk.id];bank.total=item.dueAt;
+ const first=await q.runGate('attack',[true,true,true]);
+ assert(!first.asked.some(a=>a.id===core.id),'Already-mastered recognition was forced into an otherwise fresh set');
+ const reviewed=first.asked.find(a=>a.id===risk.id);assert(reviewed?.isReview);assert(reviewed.caseId.startsWith('review-'));
+ item.dueAt=bank.total;
+ const next=await q.runGate('attack',[true,true,true]);
+ assert(!next.asked.some(a=>a.id===core.id));const again=next.asked.find(a=>a.id===risk.id);assert(again?.isReview);assert.notEqual(again.stem,reviewed.stem);
+});
+
+test('missed targets get new cases at all three scheduled reviews, retaining history through export/import',()=>{
+ const q=loadQuiz();for(const fact of q.facts) {
+   q.reset();const seen=new Set(),initial=q.makeQuestion(fact,false);seen.add(initial.stem);q.recordAnswer(initial,false);
+   const item=q.state().banks.patho.items[fact.id];
+   for(let n=0;n<3;n++) {
+     q.state().banks.patho.total=item.dueAt;const review=q.makeQuestion(fact,true);
+     assert(!seen.has(review.stem),`${fact.id}: scheduled review reused a clinical vignette`);seen.add(review.stem);q.recordAnswer(review,true);
+     const restored=q.normalizeState(JSON.parse(JSON.stringify(q.state())));assert(restored.banks.patho.items[fact.id].seenCases.includes(review.caseId));
+   }
+   assert.equal(item.mastered,true,fact.id);
+ }
+});
+
+test('upgrading an old saved answer avoids both old wordings on the next review',()=>{
+ const q=loadQuiz(),f=q.facts[0];const old={version:3,banks:{patho:{total:10,correct:9,items:{[f.id]:{attempts:1,correct:0,misses:1,lastSeenAt:1,step:0,dueAt:10,mastered:false}}}}};
+ const restored=q.normalizeState(old);assert.deepEqual(Array.from(restored.banks.patho.items[f.id].seenCases),['base','advanced']);
+ Object.assign(q.state(),restored);const review=q.makeQuestion(f,true);assert.equal(review.caseId,'review-1');
+});
+
 test('Easy uses three distinct options, simple stems, and the known ambiguous pairs are excluded',()=>{
   const q=loadQuiz();q.state().banks.patho.tier=0;
   for(const f of q.facts){const item=q.makeQuestion(f,false);assert.equal(item.options.length,3,f.id);assert(!item.stem.includes('A clinician is reviewing'));assert(!item.stem.includes('At change of shift'));assert.equal(item.rationaleOptions.length,0);}
@@ -250,13 +281,13 @@ test('keyboard reveal toggles with Enter/Space, Tab stays in the modal and ordin
 });
 
 
-test('mastered concepts rotate after 12 answers, survive reload, and a missed check revokes subsection mastery',()=>{
+test('mastered concepts rotate after 30 answers, survive reload, and a missed check revokes subsection mastery',()=>{
  const q=loadQuiz();const ids=[...new Set(q.facts.map(f=>f.conceptId))].sort().slice(0,2);const b=q.state().banks.patho;
  b.total=100;for(const f of q.facts.filter(f=>ids.includes(f.conceptId)))b.items[f.id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:0,dueAt:0,mastered:true};
- b.retentionAt=100;b.total=111;assert.equal(q.retentionConcept(),null);
- b.total=112;assert.equal(q.retentionConcept(),ids[0]);assert.equal(q.retentionConcept(),null);
- const restored=q.normalizeState(JSON.parse(JSON.stringify(q.state())));assert.equal(restored.banks.patho.retentionAt,112);
- b.total=124;assert.equal(q.retentionConcept(),ids[1]);
+ b.retentionAt=100;b.total=129;assert.equal(q.retentionConcept(),null);
+ b.total=130;assert.equal(q.retentionConcept(),ids[0]);assert.equal(q.retentionConcept(),null);
+ const restored=q.normalizeState(JSON.parse(JSON.stringify(q.state())));assert.equal(restored.banks.patho.retentionAt,130);
+ b.total=160;assert.equal(q.retentionConcept(),ids[1]);
  const f=q.facts.find(f=>f.conceptId===ids[1]);q.recordAnswer(q.makeQuestion(f,true),false);
  assert.equal(q.conceptMastered(ids[1]),false);assert.equal(b.items[f.id].dueAt,b.total+10);
 });

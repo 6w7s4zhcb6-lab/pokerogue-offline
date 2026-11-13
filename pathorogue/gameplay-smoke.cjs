@@ -22,7 +22,8 @@ const KEY = {
 function loadBank() {
  const {context}=require('./clinical-test-loader.cjs').loadClinicalContext();
  context.validateClinicalBank();
- return context.nursingFacts.map(f=>({...f,answer:context.getClinicalCase(f).answer,why:context.getClinicalCase(f).why,identification:context.isIdentification(f),sata:undefined,expert:undefined}));
+ context.validateReviewBank();
+ return context.nursingFacts.map(f=>({...f,answer:context.getClinicalCase(f).answer,why:context.getClinicalCase(f).why,variants:context.caseVariants(f),identification:context.isIdentification(f),sata:undefined,expert:undefined}));
 }
 
 async function key(cdp, name) {
@@ -103,7 +104,7 @@ async function chooseOption(cdp, scene, pattern) {
 async function readQuestion(cdp) {
   return evaluate(cdp, `(()=>{
     const d=document.querySelector('#ng-overlay .ng-dialog[data-mode]');if(!d)return null;
-    return {mode:d.dataset.mode,concept:d.dataset.concept,subsection:d.dataset.subsection,
+    return {mode:d.dataset.mode,caseId:d.dataset.caseId,concept:d.dataset.concept,subsection:d.dataset.subsection,
       level:Number(d.dataset.level),review:d.dataset.review==='true',retention:d.dataset.retention==='true',identification:d.dataset.identification==='true',
       kicker:d.querySelector('.ng-kicker')?.textContent,stem:d.querySelector('h2')?.textContent,header:d.querySelector('.ng-detail')?.textContent,
       selectAll:d.textContent.includes('SELECT ALL THAT APPLY'),
@@ -308,6 +309,7 @@ async function finishQuestionProbe(cdp) {
 async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
   const fact = bank.find(f => f.conceptId === question.concept && f.subsectionId === question.subsection);
   assert(fact, `Unknown shipped question: ${question.concept}/${question.subsection}`);
+  assert.equal(fact.variants.find(v=>v.id===question.caseId)?.stem,question.stem,'Rendered case does not match its shipped clinical variant');
   const rightAnswers = question.selectAll ? fact.sata?.right : [fact.answer];
   assert(rightAnswers?.length, "Missing correct answer in local clinical bank");
   const finalCorrect = policy === 'correct' && /Question (\d+) of \1$/.test(question.kicker);
@@ -431,7 +433,7 @@ async function answerQuestion(cdp, bank, question, policy, effectTest = null) {
     assert(current.question || current.effects === 0, 'Effects survived outside the question overlay');
   }
   await delay(80);
-  return { concept: fact.conceptId, subsection: fact.subsectionId, level: question.level, review: question.review, rationaleRequired, policy, correct, effects };
+  return { concept: fact.conceptId, subsection: fact.subsectionId, caseId:question.caseId,stem:question.stem,level: question.level, review: question.review,retention:question.retention, rationaleRequired, policy, correct, effects };
 }
 
 async function advanceMenus(cdp, scene, state, { captureAttempt = false } = {}) {
@@ -685,11 +687,30 @@ async function verifyGameplay(exe, reportDir, existingSession = null) {
     // the actual retention scheduler without hundreds of warm-up answers.
     const retentionFacts=bank.filter(f=>f.conceptId==='GI_pancreatic_cancer');
     assert(retentionFacts.some(f=>f.identification),'Retention fixture needs an authored condition-identification item');
-    await evaluate(session.cdp, '(function(ids){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));if(s.banks.patho.total<12)throw Error("Insufficient retention test answers");for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:1,step:3,dueAt:0,mastered:true};s.banks.patho.retentionAt=s.banks.patho.total-12;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+')');
+    report.retentionObserved=false;
+    const recognitionId=retentionFacts.find(f=>f.identification).id,beforeRetention=report.gates.length;
+    await evaluate(session.cdp, '(function(ids,core){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));s.banks.patho.total=Math.max(s.banks.patho.total,30);s.totalAnswers=s.banks.patho.total;for(const id of ids)s.banks.patho.items[id]={attempts:1,correct:1,misses:0,lastSeenAt:id===core?0:1,step:3,dueAt:0,mastered:true,seenCases:["base","advanced"]};s.banks.patho.retentionAt=s.banks.patho.total-29;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(retentionFacts.map(f=>f.id))+','+JSON.stringify(recognitionId)+')');
     await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
+    await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.gates.length>beforeRetention);
+    assert(!report.retentionObserved,'Mastered concept review appeared before30 answered questions');
     await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.retentionObserved);
-    assert(report.retentionObserved,'Mastered concept was not retested at twelve answers');
-    report.checks.masteredConceptRetentionEveryTwelve=true;
+    assert(report.retentionObserved,'Mastered concept was not reviewed after30 answered questions');
+    report.checks.masteredConceptRetentionEveryThirty=true;
+    const firstReview=report.gates.flatMap(g=>g.questions).find(q=>q.retention);
+    assert(firstReview?.caseId.startsWith('review-'),'Mastery review reused an old clinical case');
+    // Reopen an actually answered review target using valid imported due progress
+    // in this disposable profile. No quiz/game functions are changed.
+    const repeatFact=bank.find(f=>f.conceptId===firstReview.concept&&f.subsectionId===firstReview.subsection);
+    const reviewStems=new Set([firstReview.stem]);
+    for(let round=0;round<2;round++) {
+      const start=report.gates.length;
+      await evaluate(session.cdp,'(function(id){const s=JSON.parse(localStorage.getItem('+JSON.stringify(STORAGE_KEY)+'));const i=s.banks.patho.items[id];i.mastered=false;i.misses=1;i.step=0;i.dueAt=s.banks.patho.total;s.banks.patho.retentionAt=s.banks.patho.total;for(const [other,item]of Object.entries(s.banks.patho.items))if(other!==id&&item.misses&&!item.mastered)item.dueAt=s.banks.patho.total+100;localStorage.setItem('+JSON.stringify(STORAGE_KEY)+',JSON.stringify(s));location.reload();})('+JSON.stringify(repeatFact.id)+')');
+      await delay(1500);await installAudioProbe(session.cdp);delete report.lastPromptStarColors;scene=await findScene(session.cdp);await installEnemyProbe(session.cdp,scene);
+      await playUntil(session.cdp,scene,bank,report,reportDir,r=>r.gates.slice(start).some(g=>g.questions.some(q=>q.concept===repeatFact.conceptId&&q.subsection===repeatFact.subsectionId)));
+      const review=report.gates.slice(start).flatMap(g=>g.questions).find(q=>q.concept===repeatFact.conceptId&&q.subsection===repeatFact.subsectionId);
+      assert(review.review,'Due target was not marked as a scheduled review');assert(!reviewStems.has(review.stem),'Scheduled review repeated the same clinical vignette after reload');reviewStems.add(review.stem);
+    }
+    report.checks.freshReviewScenariosSurviveReload=true;
 
     const allQuestions = report.gates.flatMap(g => g.questions);
     const correctSound = allQuestions.find(q => q.correct && q.effects?.audio.length)?.effects.audio;

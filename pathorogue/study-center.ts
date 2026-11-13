@@ -1,6 +1,7 @@
 import { nursingFacts, type NursingFact } from "./nursing-content";
 import { buildChoices, isIdentification, identificationLabel } from "./question-builder";
 import { getClinicalCase } from "./clinical-bank";
+import { caseVariants } from "./clinical-review-bank";
 import { getDiseaseGuide, renderDiseaseGuide } from "./disease-guide";
 import { explainOptions } from "./question-rationales";
 import { canOpenStudy, studyRunId } from "./battle-context";
@@ -8,7 +9,7 @@ import { canOpenStudy, studyRunId } from "./battle-context";
 const KEY = "pokerogue.study-center.v1";
 type Attempt = { fact: string; correct: boolean; assisted: boolean; at: number };
 type Confusion = { fact: string; option: string; misses: number; repairs: string[]; resolved: boolean };
-type Study = { runId?: string; run: Attempt[]; runs: { at: number; victory: boolean; attempts: Attempt[] }[]; clinic: Attempt[]; confusions: Record<string, Confusion> };
+type Study = { runId?: string; run: Attempt[]; runs: { at: number; victory: boolean; attempts: Attempt[] }[]; clinic: Attempt[]; clinicCases?:Record<string,string[]>; confusions: Record<string, Confusion> };
 const empty = (): Study => ({ run: [], runs: [], clinic: [], confusions: {} });
 function read(): Study {
   try { const s = JSON.parse(window.localStorage.getItem(KEY) || "null"); if (s && Array.isArray(s.run) && Array.isArray(s.runs) && Array.isArray(s.clinic) && s.confusions && typeof s.confusions === "object") return s; } catch {}
@@ -100,15 +101,19 @@ export function openStudyCenter(ended = false) {
     // Use fresh subsections, avoiding the original mistaken item when repairing.
     const original = new Set(pending.map(c=>c.fact));
     pool = [...pool.filter(f=>!original.has(f.id)), ...pool.filter(f=>original.has(f.id))];
-    const identification=pool.find(isIdentification);
-    pool=identification?[identification,...pool.filter(f=>!isIdentification(f))]:pool;
-    practice(pool.slice(0,5), 0, []);
+    pool=pool.sort((a,b)=>Number(!caseVariants(a).some(v=>!study.clinicCases?.[a.id]?.includes(v.id)))-Number(!caseVariants(b).some(v=>!study.clinicCases?.[b.id]?.includes(v.id))));
+    const selected:NursingFact[]=[];let hasIdentification=false;
+    for(const fact of pool){if(isIdentification(fact)&&hasIdentification)continue;selected.push(fact);hasIdentification ||= isIdentification(fact);if(selected.length===5)break;}
+    selected.sort((a,b)=>Number(isIdentification(b))-Number(isIdentification(a)));
+    practice(selected, 0, []);
   });
 }
 function practice(pool: NursingFact[], index: number, results: Attempt[]) {
   if (!overlay) return;
   if (index >= pool.length) { view(`<h2>Clinic complete</h2><p>${results.filter(a=>a.correct).length}/${results.length} correct · ${results.filter(a=>a.assisted).length} hint-assisted.</p><p>Battle mastery and difficulty were unchanged.</p><button id="ng-clinic-again" class="ng-submit">Back to study center</button>`); overlay!.querySelector("#ng-clinic-again")?.addEventListener("click",()=>{close();openStudyCenter();}); return; }
-  const f=pool[index], clinical=buildChoices(f,0), options=[clinical.answer,...clinical.distractors].sort(()=>Math.random()-.5);
+  const f=pool[index], seen=study.clinicCases?.[f.id] || (study.clinic.some(a=>a.fact===f.id)?["base"]:[]);
+  const clinical=buildChoices(f,0,seen), options=[clinical.answer,...clinical.distractors].sort(()=>Math.random()-.5);
+  (study.clinicCases ||= {})[f.id]=[...seen.filter(id=>id!==clinical.caseId),clinical.caseId].slice(-5);save();
   overlay.dataset.clinicFact = f.id;
   let assisted=false, hint=0, graded=false;
   view(`<h2>Practice clinic · ${index+1}/${pool.length}</h2><p>${isIdentification(f)?html(identificationLabel(f)):html(f.concept)} · ${html(f.subsectionName)}</p>${isIdentification(f)?"":repairMarkup(f)}<p>${html(clinical.stem)}</p><button id="ng-clinic-hint" class="ng-action">Hint 1: background clue</button><p id="ng-clinic-hint-text" aria-live="polite"></p><div class="ng-answers">${options.map((o,i)=>`<button class="ng-option" data-clinic-answer="${i}">${html(o)}</button>`).join("")}</div><div id="ng-clinic-feedback" aria-live="polite"></div>`);

@@ -1,6 +1,6 @@
 # Offline clinical question bank
 
-The game uses 687 authored single-best-answer cases covering the original 96 lecture concepts: 292 digestive, 239 renal, and 156 musculoskeletal subsections. Each case has a clinical stem, a keyed answer, three individual incorrect alternatives, and an explanation for every option. These are original practice questions; they are not official NCLEX items.
+The game covers the original 96 lecture concepts and 687 subsections: 292 digestive, 239 renal, and 156 musculoskeletal. Each subsection has an introductory case, an advanced form, and three additional authored clinical scenarios for review (2,061 new review cases). Each case preserves the subsection's keyed learning target, three individual incorrect alternatives, and an explanation for every option. These are original practice questions; they are not official NCLEX items.
 
 `clinical-bank.ts` is the sole active question source. Missing cases fail validation instead of falling back to the former wording templates. `nursing-content.ts` retains lecture metadata, condition-guide material, and the original subsection IDs so saved progress remains compatible. It no longer supplies the question stems or choices displayed in battles or the clinic.
 
@@ -8,7 +8,9 @@ Easy presents three options and the introductory vignette. Subsequent tiers pres
 
 Clinical review checked the stems against their keyed answers and competing choices. The editorial pass replaced unrelated distractors, clinically unsupported assumptions, and distractors that dismissed themselves with implausible absolutes. Recognition headers hide the answer and recognition questions lead each gate. Procedures and tests are labeled as such rather than described as diseases.
 
-The player needs three correct responses for a gated attack or capture attempt. A wrong response ends that gate. Enemy turns use native battle behavior with no quiz. Existing +10/+20/+50 subsection reviews, the 12-answer mastered-concept review, mastery records, clinic statistics, and saved run debriefs are retained.
+The player needs three correct responses for a gated attack or capture attempt. A wrong response ends that gate. Enemy turns use native battle behavior with no quiz. Missed subsections retain their +10/+20/+50 schedule, using new scenarios rather than reshowing the old question. Mastered concepts are reviewed after 30 answered battle questions (ten full three-question sets), at the next gate boundary. Failed sets contribute the questions actually answered. Mastery records, clinic statistics, and saved run debriefs are retained.
+
+Scenario history is saved before a question is answered and survives reload and progress export/import. Previously seen introductory/advanced wordings are conservatively excluded when migrating old progress. Unused scenarios are selected before reusing an old one; if all authored scenarios for a learning target have been used, the oldest is selected. This is a finite offline bank, not a live AI service. The clinic has separate scenario history and does not alter battle mastery. Identification questions are moved to the beginning only if selected; the ordering rule does not force a mastered identification question into every gate.
 
 Question-writing approach: [NCSBN 2026 RN Test Plan](https://www.ncsbn.org/publications/2026-nclex-rn-test-plan). Clinical checks included [NIDDK kidney and urinary disease resources](https://www.niddk.nih.gov/health-information/kidney-disease), [AAOS OrthoInfo](https://orthoinfo.aaos.org/), and [NIAMS health topics](https://www.niams.nih.gov/health-topics), with additional condition-specific primary references recorded in the source modules.
 
