@@ -177,6 +177,12 @@ async function verifyExecutable(exe, reportDir, options = {}) {
     assert(tracker.includes("96"), "96-concept tracker is missing");
     assert(tracker.includes("1/10"), "10-tier difficulty tracker is missing");
     assert(tracker.includes("Every 30 answers"), "Mastered-concept review interval is not 30 answers");
+    await evaluate(session.cdp, `(()=>{const select=document.querySelector('#ng-difficulty');if(!select)throw Error('Difficulty control missing');select.value='9';select.dispatchEvent(new Event('change',{bubbles:true}));location.reload();})()`);
+    await delay(1500);
+    for(let n=0;n<120;n++){if(await evaluate(session.cdp,"!!document.querySelector('#ng-toggle')"))break;await delay(500);}
+    await evaluate(session.cdp,"document.querySelector('#ng-toggle').click()");
+    const manual=await evaluate(session.cdp,"({value:document.querySelector('#ng-difficulty')?.value,saved:JSON.parse(localStorage.getItem('pokerogue.pathophysiology-gate.v3'))?.banks.patho})");
+    assert.equal(manual.value,'9');assert.equal(manual.saved.difficultyMode,'manual');assert.equal(manual.saved.tier,9);
     const shot = await session.cdp.send("Page.captureScreenshot", { format: "png" });
     await fsp.writeFile(path.join(reportDir, "packaged-exe-tracker.png"), Buffer.from(shot.data, "base64"));
     const report = {
@@ -186,7 +192,7 @@ async function verifyExecutable(exe, reportDir, options = {}) {
       unbundledAppPath: session.appPath,
       sha256: await hashFile(exe),
       offline: { externalDNSBlocked: true, rendererHTTPBlocked: true, loadedURL: url },
-      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true, masteryReviewThirty: true, effectsAbsentOutsideQuiz: true },
+      checks: { startupHUD: true, trackerOpen: true, concepts96: true, subsections687: true, difficulty10: true, playerDifficultyPersists:true, masteryReviewThirty: true, effectsAbsentOutsideQuiz: true },
       scope: session.appPath
         ? "Unbundled Electron diagnostic launch; this does not verify the downloadable portable EXE."
         : "Packaged portable EXE startup and tracker smoke test; battle enforcement requires separate battle verification.",

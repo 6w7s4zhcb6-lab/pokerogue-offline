@@ -136,7 +136,7 @@ async function readEffects(cdp) {
   return evaluate(cdp, `(()=>{
     const root=document.querySelector('#ng-overlay .ng-effects');if(!root)return null;
     const stars=[...root.querySelectorAll('.ng-star')].map(s=>({color:s.dataset.color||getComputedStyle(s).getPropertyValue('--star-color').trim()||getComputedStyle(s).color,fill:getComputedStyle(s).fill,background:getComputedStyle(s).backgroundColor}));
-    const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState,startTime:a.startTime,currentTime:a.currentTime}))}));
+    const balls=[...root.querySelectorAll('.ng-ball')].map(b=>({side:b.dataset.side,state:b.dataset.state,classes:b.className,filter:getComputedStyle(b).filter,animation:getComputedStyle(b).animationName,animations:b.getAnimations({subtree:true}).map(a=>({name:a.animationName,state:a.playState,startTime:a.startTime,currentTime:a.currentTime}))}));
     return {dataset:{...root.dataset},stars,balls,sparkles:[...root.querySelectorAll('.ng-star-sparkle')].map(s=>({animation:getComputedStyle(s).animationName,transform:getComputedStyle(s).transform,opacity:getComputedStyle(s).opacity})),confetti:[...root.querySelectorAll('.ng-confetti')].map(c=>({color:c.dataset.diseaseColor,concept:c.dataset.concept,emitters:JSON.parse(c.dataset.emitters||"[]"),born:Number(c.dataset.born)})),pointerEvents:getComputedStyle(root).pointerEvents};
   })()`);
 }
@@ -609,6 +609,8 @@ async function playUntil(cdp, scene, bank, report, reportDir, predicate, { highT
       if (previousPrompt) assert(colors.some((color, index) => color !== previousPrompt[index]), 'Star colors did not change for the next prompt');
       report.lastPromptStarColors = colors;
       if (!report.layouts) {
+        assert.equal(promptEffects.balls[0].filter,promptEffects.balls[1].filter,'Player ball still has a separate glow');
+        report.checks.playerBallGlowRemoved=true;
         report.layouts = [await checkLayout(cdp, reportDir, 1280, 720)];
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
         await delay(100);

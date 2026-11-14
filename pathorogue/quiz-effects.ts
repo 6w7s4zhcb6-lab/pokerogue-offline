@@ -50,7 +50,7 @@ const CSS = `
 .ng-effects .ng-ball{position:fixed;top:calc(50% - 58px);width:116px;height:116px;z-index:5;pointer-events:none;transform-origin:50% 50%;filter:drop-shadow(0 10px 16px #000a);opacity:.85}
 .ng-effects .ng-ball[data-side=player]{left:max(12px,calc((100vw - 660px)/4 - 58px))}
 .ng-effects .ng-ball[data-side=enemy]{right:max(12px,calc((100vw - 660px)/4 - 58px))}
-.ng-effects .ng-ball.is-active{opacity:1;filter:drop-shadow(0 0 12px #b2f7ff66) drop-shadow(0 10px 16px #000a)}
+.ng-effects .ng-ball.is-active{opacity:1}
 .ng-effects .ng-ball-crop{position:absolute;inset:0;overflow:hidden;border-radius:50%;animation:ng-quiz-wiggle 3.6s ease-in-out infinite;transform-origin:50% 70%}
 .ng-effects .ng-ball img{position:absolute;width:211%;height:auto;max-width:none;left:-55%;top:-29%;user-select:none;-webkit-user-drag:none}
 .ng-effects .ng-ball.is-bouncing{animation:ng-quiz-bounce .42s ease-out both}
@@ -82,7 +82,7 @@ const CSS = `
 @media(prefers-reduced-motion:reduce){
  .ng-effects .ng-ball-crop,.ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning,.ng-effects .ng-star,.ng-effects .ng-star-sparkle{animation:none!important}
  .ng-effects .ng-star,.ng-effects .ng-star-sparkle{transition:none;opacity:.65;will-change:auto}
- .ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning{filter:drop-shadow(0 0 12px #a6ffe0)}
+ .ng-effects .ng-ball.is-bouncing,.ng-effects .ng-ball.is-spinning{filter:drop-shadow(0 10px 16px #000a)}
 }
 `;
 

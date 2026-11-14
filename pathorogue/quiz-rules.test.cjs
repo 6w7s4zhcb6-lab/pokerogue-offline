@@ -21,7 +21,7 @@ function loadQuiz() {
     facts: nursingFacts, levels: LEVELS, difficulties: DIFFICULTY,
     state: () => state,
     reset: () => { state = emptyState(); prepared = []; },
-    retentionConcept, normalizeState, makeQuestion, takeQuestion, planGate, rememberCase, recordAnswer, conceptMastered, readState,
+    retentionConcept, normalizeState, makeQuestion, takeQuestion, planGate, rememberCase, recordAnswer, conceptMastered, readState,setDifficulty,
     explainOptions, explainRationaleOptions, renderAnswerFeedback, buildChoices,isIdentification,getClinicalCase,
     keyboard: (event, dialog, doc) => { this.document = doc; activeGate = true; shade = dialog; try { blockGameplayKeys(event); } finally { activeGate = false; shade = null; } },
     runGate: async (mode, responses) => {
@@ -139,6 +139,12 @@ test('difficulty climbs on ten correct answers, drops on three misses and stays 
   assert.equal(quiz.state().banks.patho.tier, 8);
   for (let i = 0; i < 30; i++) answer(quiz, fact, false);
   assert.equal(quiz.state().banks.patho.tier, 0);
+});
+
+test('player-selected difficulty stays fixed through correct and wrong streaks and reload',()=>{
+ const q=loadQuiz();assert(q.setDifficulty('7'));const f=q.facts[0];for(let i=0;i<20;i++)answer(q,f,true);for(let i=0;i<6;i++)answer(q,f,false);
+ assert.equal(q.state().banks.patho.tier,7);assert.equal(q.readState().banks.patho.difficultyMode,'manual');assert.equal(q.readState().banks.patho.tier,7);
+ assert(!q.setDifficulty('invalid'));assert(q.setDifficulty('auto'));for(let i=0;i<10;i++)answer(q,f,true);assert.equal(q.state().banks.patho.tier,8);
 });
 
 test('player attack and capture need three correct, and one miss stops each check', async () => {

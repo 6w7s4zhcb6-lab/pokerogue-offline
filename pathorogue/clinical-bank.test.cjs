@@ -1,6 +1,13 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict");
 const {loadClinicalContext}=require("./clinical-test-loader.cjs");
+test('difficulty bands deterministically change case detail and distractor closeness',()=>{
+ const {context:c}=loadClinicalContext(),f=c.nursingFacts.find(f=>f.id==='GI_pancreatic_cancer');
+ const easy=c.buildChoices(f,0),hard=c.buildChoices(f,9),source=c.getClinicalCase(f);
+ assert.equal(easy.stem,source.stem);assert(hard.stem.length<=easy.stem.length);assert.equal(hard.distractors.length,3);
+ assert.deepEqual(Array.from(hard.distractors),Array.from(source.harderFoils.map(o=>o.text)));
+ for(let n=0;n<10;n++)assert.equal(c.buildChoices(f,9).stem,hard.stem);
+});
 test("every one of the 687 subsections has an authored, unique clinical case and option explanations",()=>{
  const {context:c}=loadClinicalContext();const report=c.validateClinicalBank();assert.equal(report.cases,687);assert.equal(report.advanced,687);
  for(const f of c.nursingFacts){const item=c.getClinicalCase(f);assert(item.stem.length>=60,f.id);assert(item.stem.includes("?"),f.id);assert(item.why.length>=20,f.id);assert(item.foils.every(o=>o.why.length>=15),f.id);}
